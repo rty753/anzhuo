@@ -124,12 +124,7 @@ detect_installation_status() {
         errors+=("Java JDK 未安装")
     fi
 
-    if check_component "Android Studio" "[ -d /opt/android-studio ]"; then
-        status+=("android-studio:installed")
-    else
-        status+=("android-studio:missing")
-        errors+=("Android Studio 未安装")
-    fi
+    # Android Studio 不再作为必需组件检测（改为可选）
 
     if check_component "Chrome" "command -v google-chrome-stable"; then
         status+=("chrome:installed")
@@ -227,7 +222,7 @@ get_missing_components() {
     [[ "$status_line" == *"tigervnc:missing"* ]] && missing+=("tigervnc")
     [[ "$status_line" == *"novnc:missing"* ]] && missing+=("novnc")
     [[ "$status_line" == *"java:missing"* ]] && missing+=("java")
-    [[ "$status_line" == *"android-studio:missing"* ]] && missing+=("android-studio")
+    # Android Studio 不再作为必需组件
     [[ "$status_line" == *"chrome:missing"* ]] && missing+=("chrome")
     [[ "$status_line" == *"vnc-config:missing"* ]] && missing+=("vnc-config")
     [[ "$status_line" == *"ssl:missing"* ]] && missing+=("ssl")
@@ -638,7 +633,13 @@ show_apps_menu() {
         echo ""
 
         # 检查已安装状态
-        local firefox_status chrome_status telegram_status redroid_status
+        local android_studio_status firefox_status chrome_status telegram_status redroid_status
+
+        if [ -d /opt/android-studio ]; then
+            android_studio_status="${GREEN}[已安装]${NC}"
+        else
+            android_studio_status="${YELLOW}[未安装]${NC}"
+        fi
 
         if command -v firefox &> /dev/null; then
             firefox_status="${GREEN}[已安装]${NC}"
@@ -664,36 +665,47 @@ show_apps_menu() {
             redroid_status="${YELLOW}[未安装]${NC}"
         fi
 
-        echo -e "  ${YELLOW}1)${NC} 安装 Firefox 浏览器      $firefox_status"
-        echo -e "  ${YELLOW}2)${NC} 安装 Google Chrome       $chrome_status"
-        echo -e "  ${YELLOW}3)${NC} 安装 Telegram            $telegram_status"
-        echo -e "  ${YELLOW}4)${NC} 安装 Redroid 云手机      $redroid_status"
+        echo -e "  ${CYAN}── 开发工具 ──${NC}"
+        echo -e "  ${YELLOW}1)${NC} 安装 Android Studio      $android_studio_status"
+        echo ""
+        echo -e "  ${CYAN}── 浏览器 ──${NC}"
+        echo -e "  ${YELLOW}2)${NC} 安装 Firefox 浏览器      $firefox_status"
+        echo -e "  ${YELLOW}3)${NC} 安装 Google Chrome       $chrome_status"
+        echo ""
+        echo -e "  ${CYAN}── 通讯工具 ──${NC}"
+        echo -e "  ${YELLOW}4)${NC} 安装 Telegram            $telegram_status"
+        echo ""
+        echo -e "  ${CYAN}── 云手机 ──${NC}"
+        echo -e "  ${YELLOW}5)${NC} 安装 Redroid 云手机      $redroid_status"
+        echo -e "  ${YELLOW}6)${NC} Redroid 管理"
         echo ""
         echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
-        echo ""
-        echo -e "  ${YELLOW}5)${NC} Redroid 管理"
         echo -e "  ${YELLOW}0)${NC} 返回主菜单"
         echo ""
-        read -p "请选择操作 [0-5]: " choice
+        read -p "请选择操作 [0-6]: " choice
 
         case $choice in
             1)
-                install_firefox
+                install_android_studio
                 read -p "按回车继续..."
                 ;;
             2)
-                install_chrome
+                install_firefox
                 read -p "按回车继续..."
                 ;;
             3)
-                install_telegram
+                install_chrome
                 read -p "按回车继续..."
                 ;;
             4)
-                install_redroid
+                install_telegram
                 read -p "按回车继续..."
                 ;;
             5)
+                install_redroid
+                read -p "按回车继续..."
+                ;;
+            6)
                 manage_redroid
                 ;;
             0)
@@ -1001,7 +1013,6 @@ repair_installation() {
             tigervnc) install_tigervnc ;;
             novnc) install_novnc ;;
             java) install_java ;;
-            android-studio) install_android_studio ;;
             chrome) install_chrome ;;
             vnc-config) configure_vnc "$password" ;;
             ssl) generate_ssl_cert ;;
@@ -1110,30 +1121,27 @@ full_install() {
 
     # 开始安装
     echo ""
-    print_info "步骤 1/8: 安装基础依赖..."
+    print_info "步骤 1/7: 安装基础依赖..."
     install_base_deps
 
-    print_info "步骤 2/8: 安装 XFCE 桌面..."
+    print_info "步骤 2/7: 安装 XFCE 桌面..."
     install_xfce
 
-    print_info "步骤 3/8: 安装 TigerVNC..."
+    print_info "步骤 3/7: 安装 TigerVNC..."
     install_tigervnc
     configure_vnc "$vnc_password"
 
-    print_info "步骤 4/8: 安装 noVNC..."
+    print_info "步骤 4/7: 安装 noVNC..."
     install_novnc
     generate_ssl_cert
 
-    print_info "步骤 5/8: 安装 Java JDK..."
+    print_info "步骤 5/7: 安装 Java JDK..."
     install_java
 
-    print_info "步骤 6/8: 安装 Android Studio..."
-    install_android_studio
-
-    print_info "步骤 7/8: 安装 Google Chrome..."
+    print_info "步骤 6/7: 安装 Google Chrome..."
     install_chrome
 
-    print_info "步骤 8/8: 配置系统服务..."
+    print_info "步骤 7/7: 配置系统服务..."
     setup_services $novnc_port
     start_services
     configure_firewall $novnc_port
@@ -1162,6 +1170,7 @@ full_install() {
     echo ""
     echo -e "${YELLOW}💡 首次访问时，浏览器会提示证书不安全，点击「高级」→「继续访问」即可${NC}"
     echo -e "${YELLOW}💡 再次运行此脚本可进入管理面板${NC}"
+    echo -e "${YELLOW}💡 选择「扩展应用」可安装 Android Studio、Telegram、Redroid 等${NC}"
     echo ""
 }
 

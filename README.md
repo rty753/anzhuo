@@ -1,6 +1,6 @@
-# Android Studio Remote Desktop
+# 云端远程桌面环境
 
-一键在云服务器上部署 Android Studio 远程开发环境，通过浏览器即可访问完整的 Android 开发 IDE。
+一键在云服务器上部署远程桌面开发环境，通过浏览器即可访问。支持按需安装 Android Studio、Telegram、Redroid 云手机等扩展应用。
 
 ## 功能特性
 
@@ -9,6 +9,8 @@
 - **HTTPS 加密** - 自动生成 SSL 证书，安全传输
 - **灵活配置** - 支持自定义端口和密码，或使用随机生成
 - **开机自启** - systemd 服务管理，重启后自动恢复
+- **扩展应用** - 按需安装 Android Studio、Firefox、Telegram、Redroid 云手机
+- **智能检测** - 自动检测安装状态，支持断点续装和修复
 
 ## 系统要求
 
@@ -38,12 +40,18 @@ chmod +x install.sh
 1. **noVNC 端口** - 直接回车使用随机端口（10000-60000）
 2. **VNC 密码** - 直接回车使用随机密码（16位）
 
-安装内容：
+基础安装：
 - XFCE4 桌面环境
 - TigerVNC Server
 - noVNC (WebSocket 代理)
 - OpenJDK 17
-- Android Studio 2025.2.3.9
+- Google Chrome 浏览器
+
+扩展应用（可选）：
+- Android Studio
+- Firefox 浏览器
+- Telegram
+- Redroid 云手机 (Docker Android)
 
 ## 安装后唯一需要做的事
 
