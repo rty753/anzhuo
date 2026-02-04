@@ -979,54 +979,104 @@ show_apps_menu() {
         echo -e "  ${YELLOW}9)${NC} Redroid 管理"
         echo ""
         echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+        echo -e "  ${GREEN}支持多选：输入多个数字，用空格分隔，如: 1 4 5 7${NC}"
+        echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
         echo -e "  ${YELLOW}0)${NC} 返回主菜单"
         echo ""
-        read -p "请选择操作 [0-9]: " choice
+        read -p "请选择操作: " choices
 
-        case $choice in
-            1)
-                install_chinese_input
-                read -p "按回车继续..."
-                ;;
-            2)
-                setup_clipboard
-                read -p "按回车继续..."
-                ;;
-            3)
-                setup_resolution
-                read -p "按回车继续..."
-                ;;
-            4)
-                install_android_studio
-                read -p "按回车继续..."
-                ;;
-            5)
-                install_firefox
-                read -p "按回车继续..."
-                ;;
-            6)
-                install_chrome
-                read -p "按回车继续..."
-                ;;
-            7)
-                install_telegram
-                read -p "按回车继续..."
-                ;;
-            8)
-                install_redroid
-                read -p "按回车继续..."
-                ;;
-            9)
-                manage_redroid
-                ;;
-            0)
-                return
-                ;;
-            *)
-                print_warning "无效选项"
-                sleep 1
-                ;;
-        esac
+        # 如果是 0 或空，返回
+        if [ -z "$choices" ] || [ "$choices" = "0" ]; then
+            return
+        fi
+
+        # 如果是 9（Redroid 管理），单独处理
+        if [ "$choices" = "9" ]; then
+            manage_redroid
+            continue
+        fi
+
+        # 解析多选（支持空格、逗号分隔）
+        choices=$(echo "$choices" | tr ',' ' ')
+        local install_count=0
+        local install_list=""
+
+        # 预览要安装的内容
+        for choice in $choices; do
+            case $choice in
+                1) install_list="$install_list\n    • 中文输入法" ;;
+                2) install_list="$install_list\n    • 剪贴板共享" ;;
+                3) install_list="$install_list\n    • 分辨率设置" ;;
+                4) install_list="$install_list\n    • Android Studio" ;;
+                5) install_list="$install_list\n    • Firefox 浏览器" ;;
+                6) install_list="$install_list\n    • Google Chrome" ;;
+                7) install_list="$install_list\n    • Telegram" ;;
+                8) install_list="$install_list\n    • Redroid 云手机" ;;
+            esac
+        done
+
+        if [ -n "$install_list" ]; then
+            echo ""
+            echo -e "${CYAN}即将安装/配置：${NC}"
+            echo -e "$install_list"
+            echo ""
+            read -p "确认开始？[Y/n]: " confirm
+            if [[ "$confirm" =~ ^[Nn] ]]; then
+                continue
+            fi
+        fi
+
+        # 执行安装
+        for choice in $choices; do
+            echo ""
+            echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+            case $choice in
+                1)
+                    install_chinese_input
+                    ((install_count++))
+                    ;;
+                2)
+                    setup_clipboard
+                    ((install_count++))
+                    ;;
+                3)
+                    setup_resolution
+                    ((install_count++))
+                    ;;
+                4)
+                    install_android_studio
+                    ((install_count++))
+                    ;;
+                5)
+                    install_firefox
+                    ((install_count++))
+                    ;;
+                6)
+                    install_chrome
+                    ((install_count++))
+                    ;;
+                7)
+                    install_telegram
+                    ((install_count++))
+                    ;;
+                8)
+                    install_redroid
+                    ((install_count++))
+                    ;;
+                *)
+                    print_warning "忽略无效选项: $choice"
+                    ;;
+            esac
+        done
+
+        if [ $install_count -gt 0 ]; then
+            echo ""
+            echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+            print_success "已完成 $install_count 项安装/配置"
+            echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
+        fi
+
+        read -p "按回车继续..."
     done
 }
 
