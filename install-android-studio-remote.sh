@@ -365,12 +365,12 @@ EOF
 # 扩展应用安装
 #============================================================================
 install_chinese_input() {
-    print_info "安装中文输入法 (Fcitx5 + 中文拼音)..."
+    print_info "安装中文输入法 (iBus 拼音)..."
 
-    # 安装 fcitx5 和中文输入法
+    # 使用 iBus，比 fcitx5 更稳定且易于配置
     sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-        fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 \
-        fcitx5-frontend-qt5 fcitx5-config-qt im-config fonts-noto-cjk fonts-noto-cjk-extra
+        ibus ibus-pinyin ibus-gtk ibus-gtk3 fonts-noto-cjk fonts-noto-cjk-extra \
+        language-pack-zh-hans language-pack-gnome-zh-hans
 
     # 获取安装用户的 home 目录
     local user_home
@@ -381,72 +381,135 @@ install_chinese_input() {
     fi
 
     # 配置输入法环境变量
-    cat >> $user_home/.profile << 'EOF'
+    if ! grep -q "GTK_IM_MODULE=ibus" $user_home/.profile 2>/dev/null; then
+        cat >> $user_home/.profile << 'EOF'
 
-# Fcitx5 中文输入法配置
-export GTK_IM_MODULE=fcitx
-export QT_IM_MODULE=fcitx
-export XMODIFIERS=@im=fcitx
-export INPUT_METHOD=fcitx
-export SDL_IM_MODULE=fcitx
+# iBus 中文输入法配置
+export GTK_IM_MODULE=ibus
+export QT_IM_MODULE=ibus
+export XMODIFIERS=@im=ibus
 EOF
+    fi
 
-    # 创建 fcitx5 自动启动
-    mkdir -p $user_home/.config/autostart
-    cat > $user_home/.config/autostart/fcitx5.desktop << 'EOF'
-[Desktop Entry]
-Type=Application
-Name=Fcitx5
-Exec=fcitx5
-Hidden=false
-EOF
+    # 配置 iBus 默认输入法
+    mkdir -p $user_home/.config/ibus/bus
 
-    # 配置 fcitx5 默认使用拼音
-    mkdir -p $user_home/.config/fcitx5/profile
-    cat > $user_home/.config/fcitx5/profile << 'EOF'
-[Groups/0]
-Name=Default
-Default Layout=us
-DefaultIM=pinyin
+    # 使用 dconf 配置 iBus（如果可用）
+    if command -v dconf &> /dev/null; then
+        sudo -u ${INSTALL_USER:-$CURRENT_USER} dbus-launch dconf write /desktop/ibus/general/preload-engines "['xkb:us::eng', 'pinyin']" 2>/dev/null || true
+        sudo -u ${INSTALL_USER:-$CURRENT_USER} dbus-launch dconf write /desktop/ibus/general/use-system-keyboard-layout true 2>/dev/null || true
+    fi
 
-[Groups/0/Items/0]
-Name=keyboard-us
-Layout=
-
-[Groups/0/Items/1]
-Name=pinyin
-Layout=
-
-[GroupOrder]
-0=Default
-EOF
-
-    # 修改 VNC 启动脚本，添加输入法启动
+    # 修改 VNC 启动脚本
     if [ -f $user_home/.vnc/xstartup ]; then
-        # 检查是否已添加
-        if ! grep -q "fcitx5" $user_home/.vnc/xstartup; then
+        # 移除旧的 fcitx 配置（如果有）
+        sed -i '/fcitx/d' $user_home/.vnc/xstartup
+
+        # 检查是否已添加 ibus
+        if ! grep -q "ibus-daemon" $user_home/.vnc/xstartup; then
             sed -i '/exec startxfce4/i \
 # 启动中文输入法\
-export GTK_IM_MODULE=fcitx\
-export QT_IM_MODULE=fcitx\
-export XMODIFIERS=@im=fcitx\
-fcitx5 -d &\
+export GTK_IM_MODULE=ibus\
+export QT_IM_MODULE=ibus\
+export XMODIFIERS=@im=ibus\
+ibus-daemon -drx &\
 sleep 1' $user_home/.vnc/xstartup
         fi
     fi
 
+    # 创建桌面提示文件
+    cat > $user_home/Desktop/输入法使用说明.txt << 'EOF'
+中文输入法使用说明
+==================
+
+切换输入法: Ctrl + Space 或 Super + Space
+
+如果输入法未显示，请执行:
+1. 打开终端
+2. 输入: ibus-setup
+3. 在"输入法"标签页添加"中文 - Pinyin"
+
+也可以点击右上角系统托盘的键盘图标进行设置
+EOF
+
     print_success "中文输入法安装完成"
     echo ""
-    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
-    echo -e "  使用方法:"
-    echo -e "  ${GREEN}Ctrl + Space${NC}  切换中英文输入法"
-    echo -e "  ${GREEN}Shift${NC}         临时切换英文"
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║              中文输入法使用说明                            ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${GREEN}切换输入法:${NC}  Ctrl + Space  或  Super + Space"
+    echo ""
+    echo -e "  ${YELLOW}如果输入法图标未显示:${NC}"
+    echo -e "    1. 打开终端，输入: ${GREEN}ibus-setup${NC}"
+    echo -e "    2. 点击「输入法」标签"
+    echo -e "    3. 点击「添加」→ 选择「中文」→「Pinyin」"
+    echo ""
     echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
     echo ""
     print_warning "需要重启 VNC 服务才能生效"
     read -p "是否现在重启 VNC？[Y/n]: " restart_vnc
     if [[ ! "$restart_vnc" =~ ^[Nn] ]]; then
         restart_services
+        print_success "已重启，请刷新浏览器重新连接"
+    fi
+}
+
+setup_resolution() {
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║              分辨率设置                                    ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  当前默认分辨率: ${GREEN}1920x1080${NC}"
+    echo ""
+    echo -e "  ${YELLOW}选择预设分辨率：${NC}"
+    echo -e "    1) 1920x1080 (全高清)"
+    echo -e "    2) 1600x900  (适合笔记本)"
+    echo -e "    3) 1440x900  (小屏幕)"
+    echo -e "    4) 1280x720  (低配置)"
+    echo -e "    5) 2560x1440 (2K 高分屏)"
+    echo -e "    6) 自定义分辨率"
+    echo ""
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo -e "  ${YELLOW}noVNC 自适应技巧：${NC}"
+    echo -e "    • 点击 noVNC 左侧菜单 → 设置 ⚙"
+    echo -e "    • 「Scaling Mode」选择「Remote Resizing」"
+    echo -e "    • 这样会根据浏览器窗口自动调整"
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo ""
+    read -p "请选择 [1-6, 0 返回]: " res_choice
+
+    local new_res=""
+    case $res_choice in
+        1) new_res="1920x1080" ;;
+        2) new_res="1600x900" ;;
+        3) new_res="1440x900" ;;
+        4) new_res="1280x720" ;;
+        5) new_res="2560x1440" ;;
+        6)
+            read -p "请输入分辨率 (格式 宽x高，如 1920x1080): " new_res
+            if ! [[ "$new_res" =~ ^[0-9]+x[0-9]+$ ]]; then
+                print_error "格式错误！"
+                return 1
+            fi
+            ;;
+        0|"") return 0 ;;
+        *) print_error "无效选项"; return 1 ;;
+    esac
+
+    if [ -n "$new_res" ]; then
+        # 修改 systemd 服务文件
+        sudo sed -i "s/-geometry [0-9]*x[0-9]*/-geometry $new_res/" /etc/systemd/system/vncserver@.service
+        sudo systemctl daemon-reload
+
+        print_success "分辨率已设置为: $new_res"
+        print_warning "需要重启 VNC 服务才能生效"
+        read -p "是否现在重启 VNC？[Y/n]: " restart_vnc
+        if [[ ! "$restart_vnc" =~ ^[Nn] ]]; then
+            restart_services
+            print_success "已重启，请刷新浏览器重新连接"
+        fi
     fi
 }
 
@@ -455,7 +518,7 @@ setup_clipboard() {
 
     # 安装剪贴板工具
     sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-        xclip xsel autocutsel
+        xclip xsel
 
     # 获取安装用户的 home 目录
     local user_home
@@ -465,41 +528,60 @@ setup_clipboard() {
         user_home=$HOME_DIR
     fi
 
-    # 修改 VNC 启动脚本，添加剪贴板同步
+    # 创建剪贴板同步脚本
+    cat > $user_home/.vnc/clipboard-sync.sh << 'CLIPEOF'
+#!/bin/bash
+# VNC 剪贴板同步脚本
+while true; do
+    # 同步 CLIPBOARD 和 PRIMARY
+    xclip -o -selection clipboard 2>/dev/null | xclip -i -selection primary 2>/dev/null
+    sleep 0.5
+done
+CLIPEOF
+    chmod +x $user_home/.vnc/clipboard-sync.sh
+
+    # 修改 VNC 启动脚本
     if [ -f $user_home/.vnc/xstartup ]; then
-        # 检查是否已添加
-        if ! grep -q "autocutsel" $user_home/.vnc/xstartup; then
+        # 移除旧的 autocutsel 配置
+        sed -i '/autocutsel/d' $user_home/.vnc/xstartup
+        sed -i '/clipboard-sync/d' $user_home/.vnc/xstartup
+
+        # 添加剪贴板同步
+        if ! grep -q "vncconfig" $user_home/.vnc/xstartup; then
             sed -i '/exec startxfce4/i \
-# 剪贴板同步\
-autocutsel -fork &\
-autocutsel -selection PRIMARY -fork &' $user_home/.vnc/xstartup
+# 剪贴板共享 - vncconfig 负责 VNC 剪贴板同步\
+vncconfig -nowin &' $user_home/.vnc/xstartup
         fi
     fi
 
     print_success "剪贴板配置完成"
     echo ""
-    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
-    echo -e "${YELLOW}  noVNC 剪贴板使用说明：${NC}"
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║              剪贴板使用说明                                ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${GREEN}【推荐方法】使用 noVNC 剪贴板面板：${NC}"
+    echo ""
+    echo -e "    1. 点击 noVNC 左侧的 ${YELLOW}展开箭头 ▶${NC}"
+    echo -e "    2. 点击 ${YELLOW}剪贴板图标 📋${NC}"
+    echo -e "    3. ${CYAN}本地 → 远程:${NC} 粘贴到文本框，远程用 Ctrl+V"
+    echo -e "    4. ${CYAN}远程 → 本地:${NC} 远程复制后，文本框自动显示"
+    echo ""
     echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
     echo ""
-    echo -e "  ${GREEN}方法 1: noVNC 剪贴板面板${NC}"
-    echo -e "  点击左侧工具栏的「剪贴板」图标"
-    echo -e "  粘贴内容到文本框，远程桌面即可使用 Ctrl+V 粘贴"
-    echo ""
-    echo -e "  ${GREEN}方法 2: 浏览器快捷键（需授权）${NC}"
-    echo -e "  首次使用时，浏览器会请求剪贴板权限，请点击「允许」"
-    echo -e "  然后可直接使用 Ctrl+C / Ctrl+V"
+    echo -e "  ${YELLOW}注意事项：${NC}"
+    echo -e "    • 必须使用 HTTPS 连接"
+    echo -e "    • 推荐 Chrome / Edge 浏览器"
+    echo -e "    • 浏览器需要授权剪贴板权限"
     echo ""
     echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
-    echo -e "${YELLOW}  注意：部分浏览器可能限制剪贴板访问${NC}"
-    echo -e "  推荐使用 Chrome/Edge，并确保使用 HTTPS 连接"
-    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
     echo ""
 
     print_warning "需要重启 VNC 服务才能生效"
     read -p "是否现在重启 VNC？[Y/n]: " restart_vnc
     if [[ ! "$restart_vnc" =~ ^[Nn] ]]; then
         restart_services
+        print_success "已重启，请刷新浏览器重新连接"
     fi
 }
 
@@ -772,7 +854,7 @@ show_apps_menu() {
         echo ""
 
         # 检查已安装状态
-        local android_studio_status firefox_status chrome_status telegram_status redroid_status
+        local android_studio_status firefox_status chrome_status telegram_status
         local chinese_input_status clipboard_status
 
         if [ -d /opt/android-studio ]; then
@@ -799,13 +881,7 @@ show_apps_menu() {
             telegram_status="${YELLOW}[未安装]${NC}"
         fi
 
-        if sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^redroid$"; then
-            redroid_status="${GREEN}[已安装]${NC}"
-        else
-            redroid_status="${YELLOW}[未安装]${NC}"
-        fi
-
-        if command -v fcitx5 &> /dev/null; then
+        if command -v ibus &> /dev/null; then
             chinese_input_status="${GREEN}[已安装]${NC}"
         else
             chinese_input_status="${YELLOW}[未安装]${NC}"
@@ -820,25 +896,22 @@ show_apps_menu() {
         echo -e "  ${CYAN}── 系统增强 ──${NC}"
         echo -e "  ${YELLOW}1)${NC} 安装中文输入法          $chinese_input_status"
         echo -e "  ${YELLOW}2)${NC} 配置剪贴板共享          $clipboard_status"
+        echo -e "  ${YELLOW}3)${NC} 设置屏幕分辨率"
         echo ""
         echo -e "  ${CYAN}── 开发工具 ──${NC}"
-        echo -e "  ${YELLOW}3)${NC} 安装 Android Studio      $android_studio_status"
+        echo -e "  ${YELLOW}4)${NC} 安装 Android Studio      $android_studio_status"
         echo ""
         echo -e "  ${CYAN}── 浏览器 ──${NC}"
-        echo -e "  ${YELLOW}4)${NC} 安装 Firefox 浏览器      $firefox_status"
-        echo -e "  ${YELLOW}5)${NC} 安装 Google Chrome       $chrome_status"
+        echo -e "  ${YELLOW}5)${NC} 安装 Firefox 浏览器      $firefox_status"
+        echo -e "  ${YELLOW}6)${NC} 安装 Google Chrome       $chrome_status"
         echo ""
         echo -e "  ${CYAN}── 通讯工具 ──${NC}"
-        echo -e "  ${YELLOW}6)${NC} 安装 Telegram            $telegram_status"
-        echo ""
-        echo -e "  ${CYAN}── 云手机 ──${NC}"
-        echo -e "  ${YELLOW}7)${NC} 安装 Redroid 云手机      $redroid_status"
-        echo -e "  ${YELLOW}8)${NC} Redroid 管理"
+        echo -e "  ${YELLOW}7)${NC} 安装 Telegram            $telegram_status"
         echo ""
         echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
         echo -e "  ${YELLOW}0)${NC} 返回主菜单"
         echo ""
-        read -p "请选择操作 [0-8]: " choice
+        read -p "请选择操作 [0-7]: " choice
 
         case $choice in
             1)
@@ -850,27 +923,24 @@ show_apps_menu() {
                 read -p "按回车继续..."
                 ;;
             3)
-                install_android_studio
+                setup_resolution
                 read -p "按回车继续..."
                 ;;
             4)
-                install_firefox
+                install_android_studio
                 read -p "按回车继续..."
                 ;;
             5)
-                install_chrome
+                install_firefox
                 read -p "按回车继续..."
                 ;;
             6)
-                install_telegram
+                install_chrome
                 read -p "按回车继续..."
                 ;;
             7)
-                install_redroid
+                install_telegram
                 read -p "按回车继续..."
-                ;;
-            8)
-                manage_redroid
                 ;;
             0)
                 return
@@ -1223,11 +1293,92 @@ uninstall() {
 #============================================================================
 # 全新安装流程
 #============================================================================
+show_system_requirements() {
+    clear
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║              系统要求 & 环境检测                           ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}  支持的操作系统：${NC}"
+    echo -e "    • Ubuntu 20.04 LTS"
+    echo -e "    • Ubuntu 22.04 LTS"
+    echo -e "    • Ubuntu 24.04 LTS"
+    echo -e "    • Debian 11/12"
+    echo ""
+    echo -e "${YELLOW}  最低配置要求：${NC}"
+    echo -e "    • CPU:    1 核"
+    echo -e "    • 内存:   2 GB（推荐 4GB+）"
+    echo -e "    • 磁盘:   10 GB 可用空间"
+    echo -e "    • 网络:   需开放 1 个 TCP 端口"
+    echo ""
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo ""
+
+    # 检测当前系统
+    local os_name=$(lsb_release -is 2>/dev/null || echo "Unknown")
+    local os_version=$(lsb_release -rs 2>/dev/null || echo "Unknown")
+    local total_mem=$(free -m | awk '/^Mem:/{print $2}')
+    local free_disk=$(df -BG / | awk 'NR==2{print $4}' | tr -d 'G')
+    local cpu_cores=$(nproc)
+
+    echo -e "${YELLOW}  当前系统信息：${NC}"
+    echo -e "    • 系统:   ${GREEN}$os_name $os_version${NC}"
+    echo -e "    • CPU:    ${GREEN}$cpu_cores 核${NC}"
+
+    if [ "$total_mem" -ge 2000 ]; then
+        echo -e "    • 内存:   ${GREEN}${total_mem} MB ✓${NC}"
+    else
+        echo -e "    • 内存:   ${RED}${total_mem} MB ✗ (建议 2GB+)${NC}"
+    fi
+
+    if [ "$free_disk" -ge 10 ]; then
+        echo -e "    • 磁盘:   ${GREEN}${free_disk} GB 可用 ✓${NC}"
+    else
+        echo -e "    • 磁盘:   ${RED}${free_disk} GB 可用 ✗ (需要 10GB+)${NC}"
+    fi
+
+    echo ""
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo ""
+
+    # 检查系统兼容性
+    local compatible=true
+    if [[ ! "$os_name" =~ ^(Ubuntu|Debian)$ ]]; then
+        print_warning "当前系统未经测试，可能存在兼容性问题"
+        compatible=false
+    fi
+
+    if [ "$total_mem" -lt 1500 ]; then
+        print_error "内存不足，可能无法正常运行"
+        compatible=false
+    fi
+
+    if [ "$free_disk" -lt 8 ]; then
+        print_error "磁盘空间不足"
+        compatible=false
+    fi
+
+    if [ "$compatible" = false ]; then
+        echo ""
+        read -p "系统可能不满足要求，是否继续？[y/N]: " force_continue
+        if [[ ! "$force_continue" =~ ^[Yy] ]]; then
+            exit 0
+        fi
+    fi
+
+    echo ""
+    read -p "按回车继续安装..."
+}
+
 full_install() {
+    # 显示系统要求
+    show_system_requirements
+
     clear
     echo ""
     echo -e "${CYAN}============================================${NC}"
-    echo -e "${CYAN}   Android Studio 远程桌面安装脚本${NC}"
+    echo -e "${CYAN}       云端远程桌面 - 开始安装${NC}"
     echo -e "${CYAN}============================================${NC}"
     echo ""
 
