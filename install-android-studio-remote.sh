@@ -366,6 +366,347 @@ EOF
     print_success "Google Chrome 安装完成"
 }
 
+#============================================================================
+# 扩展应用安装
+#============================================================================
+install_firefox() {
+    print_info "安装 Firefox 浏览器..."
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" firefox
+
+    # 获取安装用户的 home 目录
+    local user_home
+    if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ]; then
+        user_home=$(eval echo ~$INSTALL_USER)
+    else
+        user_home=$HOME_DIR
+    fi
+
+    # 创建桌面快捷方式
+    mkdir -p $user_home/Desktop
+    cat > $user_home/Desktop/firefox.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Firefox
+Icon=firefox
+Exec=/usr/bin/firefox %U
+Categories=Network;WebBrowser;
+Terminal=false
+StartupNotify=true
+EOF
+    chmod +x $user_home/Desktop/firefox.desktop
+    print_success "Firefox 安装完成"
+}
+
+install_telegram() {
+    print_info "安装 Telegram..."
+
+    # 下载 Telegram
+    local tg_url="https://telegram.org/dl/desktop/linux"
+    wget -q --show-progress -O /tmp/telegram.tar.xz "$tg_url"
+
+    # 解压安装
+    sudo tar -xJf /tmp/telegram.tar.xz -C /opt/
+    rm -f /tmp/telegram.tar.xz
+
+    # 创建命令链接
+    sudo ln -sf /opt/Telegram/Telegram /usr/local/bin/telegram
+
+    # 获取安装用户的 home 目录
+    local user_home
+    if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ]; then
+        user_home=$(eval echo ~$INSTALL_USER)
+    else
+        user_home=$HOME_DIR
+    fi
+
+    # 创建桌面快捷方式
+    mkdir -p $user_home/Desktop
+    cat > $user_home/Desktop/telegram.desktop << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Telegram
+Icon=/opt/Telegram/Telegram
+Exec=/opt/Telegram/Telegram
+Categories=Network;InstantMessaging;
+Terminal=false
+StartupNotify=true
+EOF
+    chmod +x $user_home/Desktop/telegram.desktop
+    print_success "Telegram 安装完成"
+}
+
+install_redroid() {
+    print_info "安装 Redroid (Docker 云手机)..."
+
+    # 检查并安装 Docker
+    if ! command -v docker &> /dev/null; then
+        print_info "正在安装 Docker..."
+        curl -fsSL https://get.docker.com | sudo sh
+        sudo usermod -aG docker $CURRENT_USER
+        sudo systemctl enable docker
+        sudo systemctl start docker
+        print_success "Docker 安装完成"
+    else
+        print_info "Docker 已安装"
+    fi
+
+    # 加载必要的内核模块
+    print_info "配置内核模块..."
+    sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>/dev/null || true
+    sudo modprobe ashmem_linux 2>/dev/null || true
+
+    # 检查是否支持 binder
+    if [ ! -e /dev/binder ] && [ ! -e /dev/binderfs/binder ]; then
+        print_warning "系统可能不支持 binder，尝试安装 binder 模块..."
+        sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+            linux-modules-extra-$(uname -r) 2>/dev/null || true
+        sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>/dev/null || true
+    fi
+
+    # 创建 binderfs 挂载点（如果需要）
+    if [ ! -e /dev/binder ]; then
+        sudo mkdir -p /dev/binderfs
+        sudo mount -t binder binder /dev/binderfs 2>/dev/null || true
+    fi
+
+    # 拉取 Redroid 镜像
+    print_info "拉取 Redroid 镜像（约 1GB）..."
+    sudo docker pull redroid/redroid:11.0.0-latest
+
+    # 生成随机 ADB 端口
+    local adb_port=$(shuf -i 5555-5600 -n 1)
+
+    # 运行 Redroid 容器
+    print_info "启动 Redroid 容器..."
+    sudo docker run -d --name redroid \
+        --privileged \
+        -v /dev/binderfs:/dev/binderfs \
+        -p ${adb_port}:5555 \
+        redroid/redroid:11.0.0-latest \
+        androidboot.redroid_gpu_mode=guest \
+        androidboot.redroid_width=720 \
+        androidboot.redroid_height=1280 \
+        androidboot.redroid_dpi=320 2>/dev/null || {
+            # 如果 binderfs 不可用，尝试其他方式
+            sudo docker run -d --name redroid \
+                --privileged \
+                -p ${adb_port}:5555 \
+                redroid/redroid:11.0.0-latest \
+                androidboot.redroid_gpu_mode=guest \
+                androidboot.redroid_width=720 \
+                androidboot.redroid_height=1280 \
+                androidboot.redroid_dpi=320
+        }
+
+    # 安装 scrcpy 用于显示
+    print_info "安装 scrcpy（屏幕投射工具）..."
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        scrcpy adb 2>/dev/null || {
+            # 如果 apt 没有 scrcpy，用 snap 安装
+            sudo snap install scrcpy 2>/dev/null || true
+        }
+
+    # 获取安装用户的 home 目录
+    local user_home
+    if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ]; then
+        user_home=$(eval echo ~$INSTALL_USER)
+    else
+        user_home=$HOME_DIR
+    fi
+
+    # 创建连接脚本
+    cat > $user_home/Desktop/redroid-connect.sh << EOF
+#!/bin/bash
+adb connect localhost:${adb_port}
+sleep 2
+scrcpy -s localhost:${adb_port}
+EOF
+    chmod +x $user_home/Desktop/redroid-connect.sh
+
+    # 创建桌面快捷方式
+    cat > $user_home/Desktop/redroid.desktop << EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Redroid 云手机
+Icon=phone
+Exec=$user_home/Desktop/redroid-connect.sh
+Categories=Development;
+Terminal=true
+StartupNotify=true
+EOF
+    chmod +x $user_home/Desktop/redroid.desktop
+
+    # 开放防火墙端口
+    configure_firewall $adb_port
+
+    echo ""
+    print_success "Redroid 安装完成！"
+    echo ""
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo -e "  ADB 端口: ${GREEN}${adb_port}${NC}"
+    echo -e "  连接命令: ${GREEN}adb connect localhost:${adb_port}${NC}"
+    echo -e "  投屏命令: ${GREEN}scrcpy -s localhost:${adb_port}${NC}"
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo ""
+    print_warning "请在云控制台开放端口 ${adb_port} 以便远程 ADB 连接"
+    echo ""
+}
+
+manage_redroid() {
+    while true; do
+        clear
+        echo ""
+        echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║              Redroid 云手机管理                            ║${NC}"
+        echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+
+        # 检查 Redroid 状态
+        local redroid_status
+        if sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^redroid$"; then
+            redroid_status="${GREEN}运行中${NC}"
+        elif sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^redroid$"; then
+            redroid_status="${YELLOW}已停止${NC}"
+        else
+            redroid_status="${RED}未安装${NC}"
+        fi
+
+        echo -e "  Redroid 状态: $redroid_status"
+        echo ""
+        echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+        echo ""
+        echo -e "  ${YELLOW}1)${NC} 启动 Redroid"
+        echo -e "  ${YELLOW}2)${NC} 停止 Redroid"
+        echo -e "  ${YELLOW}3)${NC} 重启 Redroid"
+        echo -e "  ${YELLOW}4)${NC} 查看日志"
+        echo -e "  ${YELLOW}5)${NC} 删除并重装"
+        echo -e "  ${YELLOW}0)${NC} 返回上级菜单"
+        echo ""
+        read -p "请选择操作 [0-5]: " choice
+
+        case $choice in
+            1)
+                sudo docker start redroid 2>/dev/null || print_error "启动失败，Redroid 可能未安装"
+                print_success "Redroid 已启动"
+                read -p "按回车继续..."
+                ;;
+            2)
+                sudo docker stop redroid 2>/dev/null
+                print_success "Redroid 已停止"
+                read -p "按回车继续..."
+                ;;
+            3)
+                sudo docker restart redroid 2>/dev/null
+                print_success "Redroid 已重启"
+                read -p "按回车继续..."
+                ;;
+            4)
+                echo ""
+                sudo docker logs --tail 50 redroid 2>/dev/null || print_error "无法获取日志"
+                echo ""
+                read -p "按回车继续..."
+                ;;
+            5)
+                sudo docker rm -f redroid 2>/dev/null
+                install_redroid
+                read -p "按回车继续..."
+                ;;
+            0)
+                return
+                ;;
+            *)
+                print_warning "无效选项"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+#============================================================================
+# 扩展应用菜单
+#============================================================================
+show_apps_menu() {
+    while true; do
+        clear
+        echo ""
+        echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║              扩展应用安装                                  ║${NC}"
+        echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+
+        # 检查已安装状态
+        local firefox_status chrome_status telegram_status redroid_status
+
+        if command -v firefox &> /dev/null; then
+            firefox_status="${GREEN}[已安装]${NC}"
+        else
+            firefox_status="${YELLOW}[未安装]${NC}"
+        fi
+
+        if command -v google-chrome-stable &> /dev/null; then
+            chrome_status="${GREEN}[已安装]${NC}"
+        else
+            chrome_status="${YELLOW}[未安装]${NC}"
+        fi
+
+        if [ -f /opt/Telegram/Telegram ]; then
+            telegram_status="${GREEN}[已安装]${NC}"
+        else
+            telegram_status="${YELLOW}[未安装]${NC}"
+        fi
+
+        if sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^redroid$"; then
+            redroid_status="${GREEN}[已安装]${NC}"
+        else
+            redroid_status="${YELLOW}[未安装]${NC}"
+        fi
+
+        echo -e "  ${YELLOW}1)${NC} 安装 Firefox 浏览器      $firefox_status"
+        echo -e "  ${YELLOW}2)${NC} 安装 Google Chrome       $chrome_status"
+        echo -e "  ${YELLOW}3)${NC} 安装 Telegram            $telegram_status"
+        echo -e "  ${YELLOW}4)${NC} 安装 Redroid 云手机      $redroid_status"
+        echo ""
+        echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+        echo ""
+        echo -e "  ${YELLOW}5)${NC} Redroid 管理"
+        echo -e "  ${YELLOW}0)${NC} 返回主菜单"
+        echo ""
+        read -p "请选择操作 [0-5]: " choice
+
+        case $choice in
+            1)
+                install_firefox
+                read -p "按回车继续..."
+                ;;
+            2)
+                install_chrome
+                read -p "按回车继续..."
+                ;;
+            3)
+                install_telegram
+                read -p "按回车继续..."
+                ;;
+            4)
+                install_redroid
+                read -p "按回车继续..."
+                ;;
+            5)
+                manage_redroid
+                ;;
+            0)
+                return
+                ;;
+            *)
+                print_warning "无效选项"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
 setup_services() {
     local novnc_port=$1
     local vnc_port=5901
@@ -520,11 +861,14 @@ show_management_menu() {
         echo -e "  ${YELLOW}5)${NC} 修改端口"
         echo -e "  ${YELLOW}6)${NC} 查看日志"
         echo -e "  ${YELLOW}7)${NC} 系统检查与修复"
+        echo ""
+        echo -e "  ${CYAN}9)${NC} ⭐ 扩展应用安装"
+        echo ""
         echo -e "  ${YELLOW}8)${NC} 完全卸载"
         echo -e "  ${YELLOW}0)${NC} 退出"
         echo ""
         echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
-        read -p "请选择操作 [0-8]: " choice
+        read -p "请选择操作 [0-9]: " choice
 
         case $choice in
             1)
@@ -563,6 +907,9 @@ show_management_menu() {
             8)
                 uninstall
                 exit 0
+                ;;
+            9)
+                show_apps_menu
                 ;;
             0)
                 echo ""
