@@ -1,14 +1,13 @@
 #!/bin/bash
 
 #============================================================================
-# Android Studio 远程桌面一键安装脚本
+# 云端远程桌面一键安装脚本 v2.0
 # 支持 HTTPS + 自定义/随机端口 + 自定义/随机密码
-# 适用于 Ubuntu 20.04/22.04/24.04
-#
-# 功能：智能检测安装状态，支持续装、修复、管理
+# 适用于 Ubuntu 20.04/22.04/24.04 / Debian 11/12
 #============================================================================
 
-# 注意：不使用 set -e，因为有些检测命令会返回非零状态
+# 版本号（用于调试）
+VERSION="2.0.1"
 
 # 设置非交互模式，避免 apt 弹出配置对话框
 export DEBIAN_FRONTEND=noninteractive
@@ -1643,39 +1642,40 @@ full_install() {
 # 主入口
 #============================================================================
 main() {
-    # 尝试查找已有配置
-    find_and_load_config
+    # 显示版本信息
+    echo ""
+    echo -e "${CYAN}云端远程桌面安装脚本 v${VERSION}${NC}"
+    echo ""
+
+    # 尝试查找已有配置（忽略返回值）
+    find_and_load_config || true
 
     # 简化检测：只检查 VNC 服务是否正在运行
     local vnc_running=false
     local novnc_running=false
 
-    if systemctl is-active --quiet vncserver@1 2>/dev/null; then
-        vnc_running=true
-    fi
-    if systemctl is-active --quiet novnc 2>/dev/null; then
-        novnc_running=true
-    fi
+    systemctl is-active --quiet vncserver@1 2>/dev/null && vnc_running=true
+    systemctl is-active --quiet novnc 2>/dev/null && novnc_running=true
 
     # 如果服务都在运行，直接进入管理界面
     if [ "$vnc_running" = true ] && [ "$novnc_running" = true ]; then
         show_management_menu
-        return
+        return 0
     fi
 
+    # 检查是否有配置文件
+    local has_config=false
+    [ -f "$SYSTEM_CONFIG_FILE" ] && has_config=true
+    [ -f "/etc/android-studio-remote/config.conf" ] && has_config=true
+    [ -f "$HOME_DIR/.android-studio-remote.conf" ] && has_config=true
+
     # 如果有配置文件但服务没运行，询问用户
-    if [ -f "$CONFIG_FILE" ] || [ -f "$SYSTEM_CONFIG_FILE" ]; then
-        clear
-        echo ""
+    if [ "$has_config" = true ]; then
         echo -e "${YELLOW}检测到已有配置${NC}"
         echo ""
-
-        if [ "$vnc_running" = true ] || [ "$novnc_running" = true ]; then
-            echo -e "  VNC 服务: $([ "$vnc_running" = true ] && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}已停止${NC}")"
-            echo -e "  noVNC 服务: $([ "$novnc_running" = true ] && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}已停止${NC}")"
-            echo ""
-        fi
-
+        echo -e "  VNC 服务:   $([ "$vnc_running" = true ] && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}已停止${NC}")"
+        echo -e "  noVNC 服务: $([ "$novnc_running" = true ] && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}已停止${NC}")"
+        echo ""
         echo -e "  ${YELLOW}1)${NC} 进入管理界面"
         echo -e "  ${YELLOW}2)${NC} 尝试启动服务"
         echo -e "  ${YELLOW}3)${NC} 重新安装（清除旧配置）"
@@ -1692,31 +1692,33 @@ main() {
                 sudo systemctl start vncserver@1 2>/dev/null || true
                 sleep 2
                 sudo systemctl start novnc 2>/dev/null || true
-                if systemctl is-active --quiet novnc 2>/dev/null; then
+                systemctl is-active --quiet novnc 2>/dev/null && {
                     print_success "服务已启动"
                     show_management_menu
-                else
-                    print_error "服务启动失败，建议重新安装"
-                    read -p "按回车继续..."
-                fi
+                    return 0
+                }
+                print_error "服务启动失败，建议重新安装"
+                read -p "按回车继续..."
                 ;;
             3)
                 # 清理所有残留
                 print_info "清理旧配置..."
-                sudo rm -rf /etc/android-studio-remote
-                sudo rm -f /etc/systemd/system/vncserver@.service
-                sudo rm -f /etc/systemd/system/novnc.service
-                sudo systemctl daemon-reload
-                rm -f $HOME_DIR/.android-studio-remote.conf
-                rm -rf $HOME_DIR/.vnc
+                sudo rm -rf /etc/android-studio-remote 2>/dev/null || true
+                sudo rm -f /etc/systemd/system/vncserver@.service 2>/dev/null || true
+                sudo rm -f /etc/systemd/system/novnc.service 2>/dev/null || true
+                sudo systemctl daemon-reload 2>/dev/null || true
+                rm -f $HOME_DIR/.android-studio-remote.conf 2>/dev/null || true
+                rm -rf $HOME_DIR/.vnc 2>/dev/null || true
                 print_success "清理完成，开始全新安装"
                 sleep 1
                 full_install
                 ;;
             0|"")
+                echo "退出"
                 exit 0
                 ;;
             *)
+                echo "退出"
                 exit 0
                 ;;
         esac
