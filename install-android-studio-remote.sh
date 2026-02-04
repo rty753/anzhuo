@@ -1646,43 +1646,74 @@ main() {
     # 尝试查找已有配置
     find_and_load_config
 
-    # 检测安装状态
-    if has_any_installation && is_fully_installed; then
-        # 已完整安装，进入管理界面
+    # 简化检测：只检查 VNC 服务是否正在运行
+    local vnc_running=false
+    local novnc_running=false
+
+    if systemctl is-active --quiet vncserver@1 2>/dev/null; then
+        vnc_running=true
+    fi
+    if systemctl is-active --quiet novnc 2>/dev/null; then
+        novnc_running=true
+    fi
+
+    # 如果服务都在运行，直接进入管理界面
+    if [ "$vnc_running" = true ] && [ "$novnc_running" = true ]; then
         show_management_menu
-    elif has_any_installation; then
-        # 有安装但未完整，提供选项
+        return
+    fi
+
+    # 如果有配置文件但服务没运行，询问用户
+    if [ -f "$CONFIG_FILE" ] || [ -f "$SYSTEM_CONFIG_FILE" ]; then
         clear
         echo ""
-        echo -e "${YELLOW}检测到未完成的安装${NC}"
+        echo -e "${YELLOW}检测到已有配置${NC}"
         echo ""
 
-        local missing=$(get_missing_components)
-        print_warning "缺失组件: $missing"
-        echo ""
-        echo -e "  ${YELLOW}1)${NC} 继续安装/修复"
-        echo -e "  ${YELLOW}2)${NC} 重新安装"
-        echo -e "  ${YELLOW}3)${NC} 进入管理界面"
+        if [ "$vnc_running" = true ] || [ "$novnc_running" = true ]; then
+            echo -e "  VNC 服务: $([ "$vnc_running" = true ] && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}已停止${NC}")"
+            echo -e "  noVNC 服务: $([ "$novnc_running" = true ] && echo -e "${GREEN}运行中${NC}" || echo -e "${RED}已停止${NC}")"
+            echo ""
+        fi
+
+        echo -e "  ${YELLOW}1)${NC} 进入管理界面"
+        echo -e "  ${YELLOW}2)${NC} 尝试启动服务"
+        echo -e "  ${YELLOW}3)${NC} 重新安装（清除旧配置）"
         echo -e "  ${YELLOW}0)${NC} 退出"
         echo ""
         read -p "请选择 [0-3]: " choice
 
         case $choice in
             1)
-                repair_installation
-                if is_fully_installed; then
-                    show_management_menu
-                fi
-                ;;
-            2)
-                sudo rm -f $SYSTEM_CONFIG_FILE
-                rm -f $USER_CONFIG_FILE
-                full_install
-                ;;
-            3)
                 show_management_menu
                 ;;
-            0)
+            2)
+                print_info "尝试启动服务..."
+                sudo systemctl start vncserver@1 2>/dev/null || true
+                sleep 2
+                sudo systemctl start novnc 2>/dev/null || true
+                if systemctl is-active --quiet novnc 2>/dev/null; then
+                    print_success "服务已启动"
+                    show_management_menu
+                else
+                    print_error "服务启动失败，建议重新安装"
+                    read -p "按回车继续..."
+                fi
+                ;;
+            3)
+                # 清理所有残留
+                print_info "清理旧配置..."
+                sudo rm -rf /etc/android-studio-remote
+                sudo rm -f /etc/systemd/system/vncserver@.service
+                sudo rm -f /etc/systemd/system/novnc.service
+                sudo systemctl daemon-reload
+                rm -f $HOME_DIR/.android-studio-remote.conf
+                rm -rf $HOME_DIR/.vnc
+                print_success "清理完成，开始全新安装"
+                sleep 1
+                full_install
+                ;;
+            0|"")
                 exit 0
                 ;;
             *)
