@@ -4,6 +4,8 @@
 # Android Studio 远程桌面一键安装脚本
 # 支持 HTTPS + 自定义/随机端口 + 自定义/随机密码
 # 适用于 Ubuntu 20.04/22.04/24.04
+#
+# 功能：智能检测安装状态，支持续装、修复、管理
 #============================================================================
 
 set -e
@@ -21,18 +23,23 @@ NC='\033[0m' # No Color
 
 # 打印带颜色的信息
 print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_success() { echo -e "${GREEN}[✓]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
+print_error() { echo -e "${RED}[✗]${NC} $1"; }
+
+# 全局变量
+CURRENT_USER=$(whoami)
+HOME_DIR=$(eval echo ~$CURRENT_USER)
+CONFIG_FILE="$HOME_DIR/.android-studio-remote.conf"
+INSTALL_STATUS_FILE="$HOME_DIR/.android-studio-remote.status"
 
 #============================================================================
-# 生成随机端口和密码
+# 工具函数
 #============================================================================
 generate_random_port() {
     local port
     while true; do
         port=$(shuf -i 10000-60000 -n 1)
-        # 检查端口是否被占用
         if ! ss -tuln | grep -q ":$port "; then
             echo $port
             return
@@ -47,197 +54,220 @@ generate_random_password() {
 check_port_available() {
     local port=$1
     if ss -tuln | grep -q ":$port "; then
-        return 1  # 端口被占用
+        return 1
     else
-        return 0  # 端口可用
+        return 0
     fi
 }
 
-#============================================================================
-# 用户输入配置
-#============================================================================
-clear
-echo ""
-echo -e "${CYAN}============================================${NC}"
-echo -e "${CYAN}   Android Studio 远程桌面安装脚本${NC}"
-echo -e "${CYAN}============================================${NC}"
-echo ""
+get_public_ip() {
+    curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "YOUR_SERVER_IP"
+}
 
-# 获取端口
-DEFAULT_PORT=$(generate_random_port)
-echo -e "${YELLOW}请输入 noVNC 端口 [直接回车使用随机端口: $DEFAULT_PORT]:${NC}"
-read -p "> " INPUT_PORT
-
-if [ -z "$INPUT_PORT" ]; then
-    NOVNC_PORT=$DEFAULT_PORT
-    print_info "使用随机端口: $NOVNC_PORT"
-else
-    # 验证输入是否为数字
-    if ! [[ "$INPUT_PORT" =~ ^[0-9]+$ ]]; then
-        print_error "端口必须是数字！"
-        exit 1
+#============================================================================
+# 安装状态检测
+#============================================================================
+check_component() {
+    local name=$1
+    local check_cmd=$2
+    if eval "$check_cmd" &>/dev/null; then
+        return 0
+    else
+        return 1
     fi
-    # 验证端口范围
-    if [ "$INPUT_PORT" -lt 1024 ] || [ "$INPUT_PORT" -gt 65535 ]; then
-        print_error "端口必须在 1024-65535 之间！"
-        exit 1
+}
+
+detect_installation_status() {
+    local status=()
+    local errors=()
+
+    # 检测各组件
+    if check_component "XFCE" "dpkg -l | grep -q xfce4"; then
+        status+=("xfce:installed")
+    else
+        status+=("xfce:missing")
+        errors+=("XFCE 桌面未安装")
     fi
-    # 检查端口是否被占用
-    if ! check_port_available "$INPUT_PORT"; then
-        print_error "端口 $INPUT_PORT 已被占用！"
-        exit 1
+
+    if check_component "TigerVNC" "command -v vncserver"; then
+        status+=("tigervnc:installed")
+    else
+        status+=("tigervnc:missing")
+        errors+=("TigerVNC 未安装")
     fi
-    NOVNC_PORT=$INPUT_PORT
-    print_info "使用指定端口: $NOVNC_PORT"
-fi
 
-echo ""
-
-# 获取密码
-DEFAULT_PASSWORD=$(generate_random_password)
-echo -e "${YELLOW}请输入 VNC 密码 [直接回车使用随机密码: $DEFAULT_PASSWORD]:${NC}"
-read -p "> " INPUT_PASSWORD
-
-if [ -z "$INPUT_PASSWORD" ]; then
-    VNC_PASSWORD=$DEFAULT_PASSWORD
-    print_info "使用随机密码: $VNC_PASSWORD"
-else
-    # 密码长度检查
-    if [ ${#INPUT_PASSWORD} -lt 6 ]; then
-        print_error "密码至少需要 6 个字符！"
-        exit 1
+    if check_component "noVNC" "dpkg -l | grep -q novnc"; then
+        status+=("novnc:installed")
+    else
+        status+=("novnc:missing")
+        errors+=("noVNC 未安装")
     fi
-    VNC_PASSWORD=$INPUT_PASSWORD
-    print_info "使用指定密码: $VNC_PASSWORD"
-fi
 
-echo ""
+    if check_component "Java" "command -v java"; then
+        status+=("java:installed")
+    else
+        status+=("java:missing")
+        errors+=("Java JDK 未安装")
+    fi
 
-# 配置确认
-VNC_PORT=5901
-CURRENT_USER=$(whoami)
-HOME_DIR=$(eval echo ~$CURRENT_USER)
-CONFIG_FILE="$HOME_DIR/.android-studio-remote.conf"
+    if check_component "Android Studio" "[ -d /opt/android-studio ]"; then
+        status+=("android-studio:installed")
+    else
+        status+=("android-studio:missing")
+        errors+=("Android Studio 未安装")
+    fi
 
-echo -e "${CYAN}--------------------------------------------${NC}"
-echo -e "  端口: ${GREEN}$NOVNC_PORT${NC}"
-echo -e "  密码: ${GREEN}$VNC_PASSWORD${NC}"
-echo -e "${CYAN}--------------------------------------------${NC}"
-echo ""
-echo -e "${YELLOW}按回车开始安装，Ctrl+C 取消...${NC}"
-read
+    if check_component "Chrome" "command -v google-chrome-stable"; then
+        status+=("chrome:installed")
+    else
+        status+=("chrome:missing")
+        errors+=("Google Chrome 未安装")
+    fi
+
+    if check_component "VNC Config" "[ -f $HOME_DIR/.vnc/passwd ]"; then
+        status+=("vnc-config:installed")
+    else
+        status+=("vnc-config:missing")
+        errors+=("VNC 密码未配置")
+    fi
+
+    if check_component "SSL Cert" "[ -f $HOME_DIR/.vnc/ssl/novnc.pem ]"; then
+        status+=("ssl:installed")
+    else
+        status+=("ssl:missing")
+        errors+=("SSL 证书未生成")
+    fi
+
+    # 检测服务状态
+    if systemctl is-active --quiet vncserver@1 2>/dev/null; then
+        status+=("vnc-service:running")
+    else
+        status+=("vnc-service:stopped")
+        errors+=("VNC 服务未运行")
+    fi
+
+    if systemctl is-active --quiet novnc 2>/dev/null; then
+        status+=("novnc-service:running")
+    else
+        status+=("novnc-service:stopped")
+        errors+=("noVNC 服务未运行")
+    fi
+
+    # 返回结果
+    echo "STATUS:${status[*]}"
+    echo "ERRORS:${errors[*]}"
+}
+
+is_fully_installed() {
+    local result=$(detect_installation_status)
+    if echo "$result" | grep -q "missing\|stopped"; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+get_missing_components() {
+    local result=$(detect_installation_status)
+    local status_line=$(echo "$result" | grep "^STATUS:")
+    local missing=()
+
+    [[ "$status_line" == *"xfce:missing"* ]] && missing+=("xfce")
+    [[ "$status_line" == *"tigervnc:missing"* ]] && missing+=("tigervnc")
+    [[ "$status_line" == *"novnc:missing"* ]] && missing+=("novnc")
+    [[ "$status_line" == *"java:missing"* ]] && missing+=("java")
+    [[ "$status_line" == *"android-studio:missing"* ]] && missing+=("android-studio")
+    [[ "$status_line" == *"chrome:missing"* ]] && missing+=("chrome")
+    [[ "$status_line" == *"vnc-config:missing"* ]] && missing+=("vnc-config")
+    [[ "$status_line" == *"ssl:missing"* ]] && missing+=("ssl")
+    [[ "$status_line" == *"vnc-service:stopped"* ]] && missing+=("vnc-service")
+    [[ "$status_line" == *"novnc-service:stopped"* ]] && missing+=("novnc-service")
+
+    echo "${missing[*]}"
+}
 
 #============================================================================
-# 1. 系统更新和基础依赖
+# 安装函数（模块化）
 #============================================================================
-print_info "步骤 1/8: 更新系统并安装基础依赖..."
+install_base_deps() {
+    print_info "安装基础依赖..."
+    sudo apt-get update
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        wget curl git unzip net-tools ca-certificates gnupg lsb-release software-properties-common
+    print_success "基础依赖安装完成"
+}
 
-sudo apt-get update
-sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    wget \
-    curl \
-    git \
-    unzip \
-    net-tools \
-    ca-certificates \
-    gnupg \
-    lsb-release \
-    software-properties-common
+install_xfce() {
+    print_info "安装 XFCE 桌面环境..."
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        xfce4 xfce4-goodies dbus-x11
+    print_success "XFCE 桌面环境安装完成"
+}
 
-print_success "基础依赖安装完成"
+install_tigervnc() {
+    print_info "安装 TigerVNC Server..."
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        tigervnc-standalone-server tigervnc-common
+    print_success "TigerVNC 安装完成"
+}
 
-#============================================================================
-# 2. 安装 XFCE 桌面环境
-#============================================================================
-print_info "步骤 2/8: 安装 XFCE 桌面环境..."
+configure_vnc() {
+    local password=$1
+    print_info "配置 VNC..."
+    mkdir -p $HOME_DIR/.vnc
+    echo "$password" | vncpasswd -f > $HOME_DIR/.vnc/passwd
+    chmod 600 $HOME_DIR/.vnc/passwd
 
-sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    xfce4 xfce4-goodies dbus-x11
-
-print_success "XFCE 桌面环境安装完成"
-
-#============================================================================
-# 3. 安装 TigerVNC Server
-#============================================================================
-print_info "步骤 3/8: 安装 TigerVNC Server..."
-
-sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    tigervnc-standalone-server tigervnc-common
-
-# 创建 VNC 密码
-mkdir -p $HOME_DIR/.vnc
-echo "$VNC_PASSWORD" | vncpasswd -f > $HOME_DIR/.vnc/passwd
-chmod 600 $HOME_DIR/.vnc/passwd
-
-# 创建 VNC 启动脚本
-cat > $HOME_DIR/.vnc/xstartup << 'EOF'
+    cat > $HOME_DIR/.vnc/xstartup << 'EOF'
 #!/bin/bash
 unset SESSION_MANAGER
 unset DBUS_SESSION_BUS_ADDRESS
 export XKL_XMODMAP_DISABLE=1
 exec startxfce4
 EOF
+    chmod +x $HOME_DIR/.vnc/xstartup
+    print_success "VNC 配置完成"
+}
 
-chmod +x $HOME_DIR/.vnc/xstartup
+install_novnc() {
+    print_info "安装 noVNC..."
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        novnc python3-websockify python3-numpy
+    print_success "noVNC 安装完成"
+}
 
-print_success "TigerVNC 安装完成"
+generate_ssl_cert() {
+    print_info "生成 SSL 证书..."
+    local ssl_dir="$HOME_DIR/.vnc/ssl"
+    mkdir -p $ssl_dir
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout $ssl_dir/novnc.key \
+        -out $ssl_dir/novnc.crt \
+        -days 365 \
+        -subj "/C=CN/ST=State/L=City/O=Organization/CN=localhost"
+    cat $ssl_dir/novnc.key $ssl_dir/novnc.crt > $ssl_dir/novnc.pem
+    chmod 600 $ssl_dir/novnc.pem
+    print_success "SSL 证书生成完成"
+}
 
-#============================================================================
-# 4. 安装 noVNC（支持浏览器访问）
-#============================================================================
-print_info "步骤 4/8: 安装 noVNC..."
+install_java() {
+    print_info "安装 Java JDK..."
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        openjdk-17-jdk
+    print_success "Java JDK 安装完成"
+}
 
-sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    novnc python3-websockify python3-numpy
+install_android_studio() {
+    print_info "下载并安装 Android Studio（约 1.5GB）..."
+    local url="https://redirector.gvt1.com/edgedl/android/studio/ide-zips/2024.2.1.11/android-studio-2024.2.1.11-linux.tar.gz"
+    wget -q --show-progress -O /tmp/android-studio.tar.gz "$url"
+    sudo rm -rf /opt/android-studio
+    sudo tar -xzf /tmp/android-studio.tar.gz -C /opt/
+    rm -f /tmp/android-studio.tar.gz
 
-# 生成自签名 SSL 证书
-SSL_DIR="$HOME_DIR/.vnc/ssl"
-mkdir -p $SSL_DIR
-
-openssl req -x509 -nodes -newkey rsa:2048 \
-    -keyout $SSL_DIR/novnc.key \
-    -out $SSL_DIR/novnc.crt \
-    -days 365 \
-    -subj "/C=CN/ST=State/L=City/O=Organization/CN=localhost"
-
-# 合并证书和私钥（websockify 需要）
-cat $SSL_DIR/novnc.key $SSL_DIR/novnc.crt > $SSL_DIR/novnc.pem
-chmod 600 $SSL_DIR/novnc.pem
-
-print_success "noVNC 安装完成，SSL 证书已生成"
-
-#============================================================================
-# 5. 安装 Java JDK（Android Studio 依赖）
-#============================================================================
-print_info "步骤 5/8: 安装 Java JDK..."
-
-sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    openjdk-17-jdk
-
-print_success "Java JDK 安装完成"
-
-#============================================================================
-# 6. 下载并安装 Android Studio
-#============================================================================
-print_info "步骤 6/8: 下载并安装 Android Studio..."
-
-ANDROID_STUDIO_URL="https://redirector.gvt1.com/edgedl/android/studio/ide-zips/2025.2.3.9/android-studio-2025.2.3.9-linux.tar.gz"
-ANDROID_STUDIO_DIR="/opt/android-studio"
-DOWNLOAD_DIR="/tmp"
-
-# 下载 Android Studio
-print_info "正在下载 Android Studio（约 1.5GB，请耐心等待）..."
-wget -q --show-progress -O $DOWNLOAD_DIR/android-studio.tar.gz "$ANDROID_STUDIO_URL"
-
-# 解压安装
-print_info "正在解压安装..."
-sudo rm -rf $ANDROID_STUDIO_DIR
-sudo tar -xzf $DOWNLOAD_DIR/android-studio.tar.gz -C /opt/
-rm -f $DOWNLOAD_DIR/android-studio.tar.gz
-
-# 创建桌面快捷方式
-mkdir -p $HOME_DIR/Desktop
-cat > $HOME_DIR/Desktop/android-studio.desktop << EOF
+    # 桌面快捷方式
+    mkdir -p $HOME_DIR/Desktop
+    cat > $HOME_DIR/Desktop/android-studio.desktop << EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
@@ -248,32 +278,29 @@ Categories=Development;IDE;
 Terminal=false
 StartupNotify=true
 EOF
+    chmod +x $HOME_DIR/Desktop/android-studio.desktop
+    sudo ln -sf /opt/android-studio/bin/studio.sh /usr/local/bin/android-studio
+    print_success "Android Studio 安装完成"
+}
 
-chmod +x $HOME_DIR/Desktop/android-studio.desktop
+install_chrome() {
+    print_info "安装 Google Chrome..."
+    wget -q -O /tmp/google-chrome.deb "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        /tmp/google-chrome.deb || sudo apt-get install -f -y
+    rm -f /tmp/google-chrome.deb
 
-# 创建命令行启动链接
-sudo ln -sf /opt/android-studio/bin/studio.sh /usr/local/bin/android-studio
+    # 设置默认浏览器
+    sudo update-alternatives --set x-www-browser /usr/bin/google-chrome-stable 2>/dev/null || true
+    sudo update-alternatives --set gnome-www-browser /usr/bin/google-chrome-stable 2>/dev/null || true
+    xdg-settings set default-web-browser google-chrome.desktop 2>/dev/null || true
 
-print_success "Android Studio 安装完成"
+    # XFCE 默认浏览器
+    mkdir -p $HOME_DIR/.config/xfce4
+    echo "WebBrowser=google-chrome" > $HOME_DIR/.config/xfce4/helpers.rc
 
-#============================================================================
-# 7. 安装 Google Chrome 浏览器
-#============================================================================
-print_info "步骤 7/8: 安装 Google Chrome 浏览器..."
-
-# 下载并安装 Google Chrome
-wget -q -O /tmp/google-chrome.deb "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
-sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    /tmp/google-chrome.deb || sudo apt-get install -f -y
-rm -f /tmp/google-chrome.deb
-
-# 设置 Chrome 为默认浏览器
-sudo update-alternatives --set x-www-browser /usr/bin/google-chrome-stable 2>/dev/null || true
-sudo update-alternatives --set gnome-www-browser /usr/bin/google-chrome-stable 2>/dev/null || true
-xdg-settings set default-web-browser google-chrome.desktop 2>/dev/null || true
-
-# 创建桌面快捷方式
-cat > $HOME_DIR/Desktop/google-chrome.desktop << EOF
+    # 桌面快捷方式
+    cat > $HOME_DIR/Desktop/google-chrome.desktop << EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
@@ -284,24 +311,19 @@ Categories=Network;WebBrowser;
 Terminal=false
 StartupNotify=true
 EOF
+    chmod +x $HOME_DIR/Desktop/google-chrome.desktop
+    print_success "Google Chrome 安装完成"
+}
 
-chmod +x $HOME_DIR/Desktop/google-chrome.desktop
+setup_services() {
+    local novnc_port=$1
+    local vnc_port=5901
+    local ssl_dir="$HOME_DIR/.vnc/ssl"
 
-# 配置 XFCE 默认浏览器
-mkdir -p $HOME_DIR/.config/xfce4
-cat > $HOME_DIR/.config/xfce4/helpers.rc << EOF
-WebBrowser=google-chrome
-EOF
+    print_info "配置系统服务..."
 
-print_success "Google Chrome 安装完成并设置为默认浏览器"
-
-#============================================================================
-# 8. 创建系统服务
-#============================================================================
-print_info "步骤 8/8: 创建系统服务..."
-
-# VNC 服务
-sudo tee /etc/systemd/system/vncserver@.service > /dev/null << EOF
+    # VNC 服务
+    sudo tee /etc/systemd/system/vncserver@.service > /dev/null << EOF
 [Unit]
 Description=TigerVNC Server for display %i
 After=syslog.target network.target
@@ -319,8 +341,8 @@ ExecStop=/usr/bin/vncserver -kill :%i
 WantedBy=multi-user.target
 EOF
 
-# noVNC 服务（HTTPS）
-sudo tee /etc/systemd/system/novnc.service > /dev/null << EOF
+    # noVNC 服务
+    sudo tee /etc/systemd/system/novnc.service > /dev/null << EOF
 [Unit]
 Description=noVNC WebSocket Proxy
 After=vncserver@1.service
@@ -329,7 +351,7 @@ Requires=vncserver@1.service
 [Service]
 Type=simple
 User=$CURRENT_USER
-ExecStart=/usr/bin/websockify --web=/usr/share/novnc --cert=$SSL_DIR/novnc.pem $NOVNC_PORT localhost:$VNC_PORT
+ExecStart=/usr/bin/websockify --web=/usr/share/novnc --cert=$ssl_dir/novnc.pem $novnc_port localhost:$vnc_port
 Restart=on-failure
 RestartSec=5
 
@@ -337,89 +359,463 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# 重载并启动服务
-sudo systemctl daemon-reload
-sudo systemctl enable vncserver@1.service
-sudo systemctl enable novnc.service
-sudo systemctl start vncserver@1.service
-sleep 3
-sudo systemctl start novnc.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable vncserver@1.service novnc.service
+    print_success "系统服务配置完成"
+}
 
-print_success "系统服务创建并启动完成"
+start_services() {
+    print_info "启动服务..."
+    sudo systemctl start vncserver@1.service
+    sleep 3
+    sudo systemctl start novnc.service
+    print_success "服务已启动"
+}
 
-#============================================================================
-# 配置本地防火墙（仅开放本脚本使用的端口）
-#============================================================================
-print_info "配置本地防火墙（仅开放端口 $NOVNC_PORT）..."
+restart_services() {
+    print_info "重启服务..."
+    sudo systemctl restart vncserver@1.service
+    sleep 2
+    sudo systemctl restart novnc.service
+    print_success "服务已重启"
+}
 
-# UFW 防火墙（Ubuntu 默认）
-if command -v ufw &> /dev/null; then
-    sudo ufw allow $NOVNC_PORT/tcp comment "noVNC for Android Studio" 2>/dev/null || true
-    print_success "UFW 已开放端口 $NOVNC_PORT"
-fi
+configure_firewall() {
+    local port=$1
+    print_info "配置防火墙（开放端口 $port）..."
 
-# Firewalld 防火墙（CentOS/RHEL）
-if command -v firewall-cmd &> /dev/null; then
-    sudo firewall-cmd --add-port=$NOVNC_PORT/tcp --permanent 2>/dev/null || true
-    sudo firewall-cmd --reload 2>/dev/null || true
-    print_success "Firewalld 已开放端口 $NOVNC_PORT"
-fi
+    if command -v ufw &> /dev/null; then
+        sudo ufw allow $port/tcp comment "noVNC for Android Studio" 2>/dev/null || true
+    fi
 
-# iptables 直接添加规则（备用方案）
-if command -v iptables &> /dev/null && ! command -v ufw &> /dev/null && ! command -v firewall-cmd &> /dev/null; then
-    sudo iptables -I INPUT -p tcp --dport $NOVNC_PORT -j ACCEPT 2>/dev/null || true
-    print_success "iptables 已开放端口 $NOVNC_PORT"
-fi
+    if command -v firewall-cmd &> /dev/null; then
+        sudo firewall-cmd --add-port=$port/tcp --permanent 2>/dev/null || true
+        sudo firewall-cmd --reload 2>/dev/null || true
+    fi
 
-#============================================================================
-# 保存配置信息
-#============================================================================
-cat > $CONFIG_FILE << EOF
+    if command -v iptables &> /dev/null && ! command -v ufw &> /dev/null && ! command -v firewall-cmd &> /dev/null; then
+        sudo iptables -I INPUT -p tcp --dport $port -j ACCEPT 2>/dev/null || true
+    fi
+
+    print_success "防火墙配置完成"
+}
+
+save_config() {
+    local port=$1
+    local password=$2
+    cat > $CONFIG_FILE << EOF
 # Android Studio 远程桌面配置
 # 生成时间: $(date)
 
-NOVNC_PORT=$NOVNC_PORT
-VNC_PASSWORD=$VNC_PASSWORD
-VNC_PORT=$VNC_PORT
+NOVNC_PORT=$port
+VNC_PASSWORD=$password
+VNC_PORT=5901
 EOF
-
-chmod 600 $CONFIG_FILE
-
-#============================================================================
-# 获取服务器 IP
-#============================================================================
-PUBLIC_IP=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "YOUR_SERVER_IP")
+    chmod 600 $CONFIG_FILE
+}
 
 #============================================================================
-# 完成提示
+# 管理界面
 #============================================================================
-echo ""
-echo "============================================================"
-echo -e "${GREEN}✅ 安装完成！${NC}"
-echo "============================================================"
-echo ""
-echo -e "${RED}⚠️  重要：请在云服务商控制台开放端口 $NOVNC_PORT ${NC}"
-echo "------------------------------------------------------------"
-echo -e "  阿里云:  安全组 → 入方向 → 添加 TCP 端口 $NOVNC_PORT"
-echo -e "  腾讯云:  安全组 → 入站规则 → 添加 TCP 端口 $NOVNC_PORT"
-echo -e "  华为云:  安全组 → 入方向规则 → 添加 TCP 端口 $NOVNC_PORT"
-echo -e "  AWS:     Security Groups → Inbound → TCP $NOVNC_PORT"
-echo "------------------------------------------------------------"
-echo ""
-echo -e "${CYAN}📌 访问信息（云端口开放后即可访问）：${NC}"
-echo "------------------------------------------------------------"
-echo -e "  访问地址:  ${GREEN}https://$PUBLIC_IP:$NOVNC_PORT/vnc.html${NC}"
-echo -e "  VNC 密码:  ${GREEN}$VNC_PASSWORD${NC}"
-echo "------------------------------------------------------------"
-echo ""
-echo -e "${CYAN}📋 常用命令：${NC}"
-echo "------------------------------------------------------------"
-echo "  查看配置:    cat $CONFIG_FILE"
-echo "  重启 VNC:    sudo systemctl restart vncserver@1"
-echo "  重启 noVNC:  sudo systemctl restart novnc"
-echo "  查看状态:    sudo systemctl status novnc"
-echo "  查看日志:    journalctl -u novnc -f"
-echo "------------------------------------------------------------"
-echo ""
-echo -e "${YELLOW}💡 首次访问时，浏览器会提示证书不安全，点击「高级」→「继续访问」即可${NC}"
-echo ""
+show_management_menu() {
+    # 读取配置
+    source $CONFIG_FILE 2>/dev/null || { print_error "配置文件不存在"; return 1; }
+    local public_ip=$(get_public_ip)
+
+    while true; do
+        clear
+        echo ""
+        echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║         Android Studio 远程桌面 - 管理面板                 ║${NC}"
+        echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "  ${GREEN}访问地址:${NC}  https://$public_ip:$NOVNC_PORT/vnc.html"
+        echo -e "  ${GREEN}VNC 密码:${NC}  $VNC_PASSWORD"
+        echo ""
+        echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+        echo ""
+
+        # 服务状态
+        local vnc_status novnc_status
+        if systemctl is-active --quiet vncserver@1 2>/dev/null; then
+            vnc_status="${GREEN}运行中${NC}"
+        else
+            vnc_status="${RED}已停止${NC}"
+        fi
+
+        if systemctl is-active --quiet novnc 2>/dev/null; then
+            novnc_status="${GREEN}运行中${NC}"
+        else
+            novnc_status="${RED}已停止${NC}"
+        fi
+
+        echo -e "  VNC 服务:   $vnc_status"
+        echo -e "  noVNC 服务: $novnc_status"
+        echo ""
+        echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+        echo ""
+        echo -e "  ${YELLOW}1)${NC} 重启所有服务"
+        echo -e "  ${YELLOW}2)${NC} 停止所有服务"
+        echo -e "  ${YELLOW}3)${NC} 启动所有服务"
+        echo -e "  ${YELLOW}4)${NC} 修改 VNC 密码"
+        echo -e "  ${YELLOW}5)${NC} 修改端口"
+        echo -e "  ${YELLOW}6)${NC} 查看日志"
+        echo -e "  ${YELLOW}7)${NC} 系统检查与修复"
+        echo -e "  ${YELLOW}8)${NC} 完全卸载"
+        echo -e "  ${YELLOW}0)${NC} 退出"
+        echo ""
+        echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+        read -p "请选择操作 [0-8]: " choice
+
+        case $choice in
+            1)
+                restart_services
+                read -p "按回车继续..."
+                ;;
+            2)
+                print_info "停止服务..."
+                sudo systemctl stop novnc vncserver@1
+                print_success "服务已停止"
+                read -p "按回车继续..."
+                ;;
+            3)
+                start_services
+                read -p "按回车继续..."
+                ;;
+            4)
+                change_password
+                read -p "按回车继续..."
+                ;;
+            5)
+                change_port
+                read -p "按回车继续..."
+                ;;
+            6)
+                echo ""
+                print_info "最近 20 条日志："
+                journalctl -u novnc -u vncserver@1 --no-pager -n 20
+                echo ""
+                read -p "按回车继续..."
+                ;;
+            7)
+                repair_installation
+                read -p "按回车继续..."
+                ;;
+            8)
+                uninstall
+                exit 0
+                ;;
+            0)
+                echo ""
+                print_info "再见！"
+                exit 0
+                ;;
+            *)
+                print_warning "无效选项"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+change_password() {
+    echo ""
+    read -p "请输入新的 VNC 密码 (至少6位): " new_password
+    if [ ${#new_password} -lt 6 ]; then
+        print_error "密码至少需要 6 个字符！"
+        return 1
+    fi
+
+    echo "$new_password" | vncpasswd -f > $HOME_DIR/.vnc/passwd
+    chmod 600 $HOME_DIR/.vnc/passwd
+
+    # 更新配置文件
+    sed -i "s/^VNC_PASSWORD=.*/VNC_PASSWORD=$new_password/" $CONFIG_FILE
+
+    restart_services
+    print_success "密码已修改为: $new_password"
+}
+
+change_port() {
+    source $CONFIG_FILE
+    echo ""
+    echo "当前端口: $NOVNC_PORT"
+    read -p "请输入新端口 (1024-65535): " new_port
+
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1024 ] || [ "$new_port" -gt 65535 ]; then
+        print_error "无效端口号！"
+        return 1
+    fi
+
+    if ! check_port_available "$new_port"; then
+        print_error "端口 $new_port 已被占用！"
+        return 1
+    fi
+
+    # 更新配置
+    sed -i "s/^NOVNC_PORT=.*/NOVNC_PORT=$new_port/" $CONFIG_FILE
+
+    # 更新服务
+    setup_services $new_port
+    configure_firewall $new_port
+    restart_services
+
+    print_success "端口已修改为: $new_port"
+    print_warning "请记得在云控制台开放新端口 $new_port"
+}
+
+repair_installation() {
+    echo ""
+    print_info "检查安装状态..."
+
+    local missing=$(get_missing_components)
+
+    if [ -z "$missing" ]; then
+        print_success "所有组件正常运行！"
+        return 0
+    fi
+
+    print_warning "发现问题组件: $missing"
+    echo ""
+    read -p "是否修复？[Y/n]: " confirm
+
+    if [[ "$confirm" =~ ^[Nn] ]]; then
+        return 0
+    fi
+
+    # 读取配置
+    source $CONFIG_FILE 2>/dev/null
+    local port=${NOVNC_PORT:-$(generate_random_port)}
+    local password=${VNC_PASSWORD:-$(generate_random_password)}
+
+    # 按需修复
+    for component in $missing; do
+        case $component in
+            xfce) install_xfce ;;
+            tigervnc) install_tigervnc ;;
+            novnc) install_novnc ;;
+            java) install_java ;;
+            android-studio) install_android_studio ;;
+            chrome) install_chrome ;;
+            vnc-config) configure_vnc "$password" ;;
+            ssl) generate_ssl_cert ;;
+            vnc-service|novnc-service)
+                setup_services $port
+                start_services
+                ;;
+        esac
+    done
+
+    print_success "修复完成！"
+}
+
+uninstall() {
+    echo ""
+    print_warning "这将完全卸载 Android Studio 远程桌面环境！"
+    read -p "确定要卸载吗？输入 'YES' 确认: " confirm
+
+    if [ "$confirm" != "YES" ]; then
+        print_info "取消卸载"
+        return 0
+    fi
+
+    print_info "正在卸载..."
+
+    sudo systemctl stop novnc vncserver@1 2>/dev/null || true
+    sudo systemctl disable novnc vncserver@1 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/vncserver@.service
+    sudo rm -f /etc/systemd/system/novnc.service
+    sudo systemctl daemon-reload
+
+    sudo rm -rf /opt/android-studio
+    sudo rm -f /usr/local/bin/android-studio
+
+    rm -rf $HOME_DIR/.vnc
+    rm -f $HOME_DIR/.android-studio-remote.conf
+    rm -f $HOME_DIR/.android-studio-remote.status
+    rm -f $HOME_DIR/Desktop/android-studio.desktop
+    rm -f $HOME_DIR/Desktop/google-chrome.desktop
+
+    print_success "卸载完成！"
+}
+
+#============================================================================
+# 全新安装流程
+#============================================================================
+full_install() {
+    clear
+    echo ""
+    echo -e "${CYAN}============================================${NC}"
+    echo -e "${CYAN}   Android Studio 远程桌面安装脚本${NC}"
+    echo -e "${CYAN}============================================${NC}"
+    echo ""
+
+    # 获取端口
+    local default_port=$(generate_random_port)
+    echo -e "${YELLOW}请输入 noVNC 端口 [直接回车使用随机端口: $default_port]:${NC}"
+    read -p "> " input_port
+
+    local novnc_port
+    if [ -z "$input_port" ]; then
+        novnc_port=$default_port
+        print_info "使用随机端口: $novnc_port"
+    else
+        if ! [[ "$input_port" =~ ^[0-9]+$ ]] || [ "$input_port" -lt 1024 ] || [ "$input_port" -gt 65535 ]; then
+            print_error "端口必须在 1024-65535 之间！"
+            exit 1
+        fi
+        if ! check_port_available "$input_port"; then
+            print_error "端口 $input_port 已被占用！"
+            exit 1
+        fi
+        novnc_port=$input_port
+    fi
+
+    echo ""
+
+    # 获取密码
+    local default_password=$(generate_random_password)
+    echo -e "${YELLOW}请输入 VNC 密码 [直接回车使用随机密码: $default_password]:${NC}"
+    read -p "> " input_password
+
+    local vnc_password
+    if [ -z "$input_password" ]; then
+        vnc_password=$default_password
+        print_info "使用随机密码: $vnc_password"
+    else
+        if [ ${#input_password} -lt 6 ]; then
+            print_error "密码至少需要 6 个字符！"
+            exit 1
+        fi
+        vnc_password=$input_password
+    fi
+
+    echo ""
+    echo -e "${CYAN}--------------------------------------------${NC}"
+    echo -e "  端口: ${GREEN}$novnc_port${NC}"
+    echo -e "  密码: ${GREEN}$vnc_password${NC}"
+    echo -e "${CYAN}--------------------------------------------${NC}"
+    echo ""
+    echo -e "${YELLOW}按回车开始安装，Ctrl+C 取消...${NC}"
+    read
+
+    # 保存配置（安装前保存，便于断点续装）
+    save_config $novnc_port $vnc_password
+
+    # 开始安装
+    echo ""
+    print_info "步骤 1/8: 安装基础依赖..."
+    install_base_deps
+
+    print_info "步骤 2/8: 安装 XFCE 桌面..."
+    install_xfce
+
+    print_info "步骤 3/8: 安装 TigerVNC..."
+    install_tigervnc
+    configure_vnc "$vnc_password"
+
+    print_info "步骤 4/8: 安装 noVNC..."
+    install_novnc
+    generate_ssl_cert
+
+    print_info "步骤 5/8: 安装 Java JDK..."
+    install_java
+
+    print_info "步骤 6/8: 安装 Android Studio..."
+    install_android_studio
+
+    print_info "步骤 7/8: 安装 Google Chrome..."
+    install_chrome
+
+    print_info "步骤 8/8: 配置系统服务..."
+    setup_services $novnc_port
+    start_services
+    configure_firewall $novnc_port
+
+    # 完成
+    local public_ip=$(get_public_ip)
+
+    echo ""
+    echo "============================================================"
+    echo -e "${GREEN}✅ 安装完成！${NC}"
+    echo "============================================================"
+    echo ""
+    echo -e "${RED}⚠️  重要：请在云服务商控制台开放端口 $novnc_port ${NC}"
+    echo "------------------------------------------------------------"
+    echo -e "  阿里云:  安全组 → 入方向 → 添加 TCP 端口 $novnc_port"
+    echo -e "  腾讯云:  安全组 → 入站规则 → 添加 TCP 端口 $novnc_port"
+    echo -e "  华为云:  安全组 → 入方向规则 → 添加 TCP 端口 $novnc_port"
+    echo -e "  AWS:     Security Groups → Inbound → TCP $novnc_port"
+    echo "------------------------------------------------------------"
+    echo ""
+    echo -e "${CYAN}📌 访问信息（云端口开放后即可访问）：${NC}"
+    echo "------------------------------------------------------------"
+    echo -e "  访问地址:  ${GREEN}https://$public_ip:$novnc_port/vnc.html${NC}"
+    echo -e "  VNC 密码:  ${GREEN}$vnc_password${NC}"
+    echo "------------------------------------------------------------"
+    echo ""
+    echo -e "${YELLOW}💡 首次访问时，浏览器会提示证书不安全，点击「高级」→「继续访问」即可${NC}"
+    echo -e "${YELLOW}💡 再次运行此脚本可进入管理面板${NC}"
+    echo ""
+}
+
+#============================================================================
+# 主入口
+#============================================================================
+main() {
+    # 检查是否为 root
+    if [ "$EUID" -eq 0 ]; then
+        print_error "请不要使用 root 用户运行此脚本！"
+        print_info "请使用普通用户运行: bash install-android-studio-remote.sh"
+        exit 1
+    fi
+
+    # 检测安装状态
+    if [ -f "$CONFIG_FILE" ] && is_fully_installed; then
+        # 已完整安装，进入管理界面
+        show_management_menu
+    elif [ -f "$CONFIG_FILE" ]; then
+        # 有配置但未完整安装，提供选项
+        clear
+        echo ""
+        echo -e "${YELLOW}检测到未完成的安装${NC}"
+        echo ""
+
+        local missing=$(get_missing_components)
+        print_warning "缺失组件: $missing"
+        echo ""
+        echo -e "  ${YELLOW}1)${NC} 继续安装/修复"
+        echo -e "  ${YELLOW}2)${NC} 重新安装"
+        echo -e "  ${YELLOW}3)${NC} 进入管理界面"
+        echo -e "  ${YELLOW}0)${NC} 退出"
+        echo ""
+        read -p "请选择 [0-3]: " choice
+
+        case $choice in
+            1)
+                repair_installation
+                if is_fully_installed; then
+                    show_management_menu
+                fi
+                ;;
+            2)
+                rm -f $CONFIG_FILE
+                full_install
+                ;;
+            3)
+                show_management_menu
+                ;;
+            0)
+                exit 0
+                ;;
+            *)
+                exit 0
+                ;;
+        esac
+    else
+        # 全新安装
+        full_install
+    fi
+}
+
+main "$@"
