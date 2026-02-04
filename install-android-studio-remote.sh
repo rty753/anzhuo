@@ -1389,7 +1389,7 @@ repair_installation() {
 
 uninstall() {
     echo ""
-    print_warning "这将完全卸载 Android Studio 远程桌面环境！"
+    print_warning "这将完全卸载远程桌面环境！"
     read -p "确定要卸载吗？输入 'YES' 确认: " confirm
 
     if [ "$confirm" != "YES" ]; then
@@ -1399,22 +1399,45 @@ uninstall() {
 
     print_info "正在卸载..."
 
+    # 停止并删除服务
     sudo systemctl stop novnc vncserver@1 2>/dev/null || true
     sudo systemctl disable novnc vncserver@1 2>/dev/null || true
     sudo rm -f /etc/systemd/system/vncserver@.service
     sudo rm -f /etc/systemd/system/novnc.service
     sudo systemctl daemon-reload
 
+    # 删除系统级配置
+    sudo rm -rf /etc/android-studio-remote
+
+    # 删除应用
     sudo rm -rf /opt/android-studio
     sudo rm -f /usr/local/bin/android-studio
+    sudo rm -rf /opt/Telegram
 
+    # 删除用户配置
     rm -rf $HOME_DIR/.vnc
     rm -f $HOME_DIR/.android-studio-remote.conf
     rm -f $HOME_DIR/.android-studio-remote.status
+
+    # 删除桌面快捷方式
     rm -f $HOME_DIR/Desktop/android-studio.desktop
     rm -f $HOME_DIR/Desktop/google-chrome.desktop
+    rm -f $HOME_DIR/Desktop/firefox.desktop
+    rm -f $HOME_DIR/Desktop/telegram.desktop
+    rm -f $HOME_DIR/Desktop/redroid.desktop
+    rm -f $HOME_DIR/Desktop/云手机.sh
+    rm -f $HOME_DIR/Desktop/输入法使用说明.txt
+
+    # 清理其他用户目录
+    for home in /home/*; do
+        rm -rf $home/.vnc 2>/dev/null || true
+        rm -f $home/.android-studio-remote.conf 2>/dev/null || true
+        rm -f $home/Desktop/android-studio.desktop 2>/dev/null || true
+        rm -f $home/Desktop/云手机.sh 2>/dev/null || true
+    done
 
     print_success "卸载完成！"
+    print_info "重新运行脚本可进行全新安装"
 }
 
 #============================================================================
