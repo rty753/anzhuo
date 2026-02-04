@@ -8,11 +8,8 @@
 
 set -e
 
-# 非交互模式检测
-AUTO_MODE=false
-if [ "$1" = "-y" ] || [ "$1" = "--auto" ]; then
-    AUTO_MODE=true
-fi
+# 设置非交互模式，避免 apt 弹出配置对话框
+export DEBIAN_FRONTEND=noninteractive
 
 # 颜色定义
 RED='\033[0;31m'
@@ -135,8 +132,8 @@ read
 #============================================================================
 print_info "步骤 1/7: 更新系统并安装基础依赖..."
 
-sudo apt update
-sudo apt install -y \
+sudo apt-get update
+sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     wget \
     curl \
     git \
@@ -154,7 +151,8 @@ print_success "基础依赖安装完成"
 #============================================================================
 print_info "步骤 2/7: 安装 XFCE 桌面环境..."
 
-sudo apt install -y xfce4 xfce4-goodies dbus-x11
+sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+    xfce4 xfce4-goodies dbus-x11
 
 print_success "XFCE 桌面环境安装完成"
 
@@ -163,7 +161,8 @@ print_success "XFCE 桌面环境安装完成"
 #============================================================================
 print_info "步骤 3/7: 安装 TigerVNC Server..."
 
-sudo apt install -y tigervnc-standalone-server tigervnc-common
+sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+    tigervnc-standalone-server tigervnc-common
 
 # 创建 VNC 密码
 mkdir -p $HOME_DIR/.vnc
@@ -188,7 +187,8 @@ print_success "TigerVNC 安装完成"
 #============================================================================
 print_info "步骤 4/7: 安装 noVNC..."
 
-sudo apt install -y novnc python3-websockify python3-numpy
+sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+    novnc python3-websockify python3-numpy
 
 # 生成自签名 SSL 证书
 SSL_DIR="$HOME_DIR/.vnc/ssl"
@@ -211,7 +211,8 @@ print_success "noVNC 安装完成，SSL 证书已生成"
 #============================================================================
 print_info "步骤 5/7: 安装 Java JDK..."
 
-sudo apt install -y openjdk-17-jdk
+sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+    openjdk-17-jdk
 
 print_success "Java JDK 安装完成"
 
