@@ -364,6 +364,145 @@ EOF
 #============================================================================
 # 扩展应用安装
 #============================================================================
+install_chinese_input() {
+    print_info "安装中文输入法 (Fcitx5 + 中文拼音)..."
+
+    # 安装 fcitx5 和中文输入法
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 \
+        fcitx5-frontend-qt5 fcitx5-config-qt im-config fonts-noto-cjk fonts-noto-cjk-extra
+
+    # 获取安装用户的 home 目录
+    local user_home
+    if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ]; then
+        user_home=$(eval echo ~$INSTALL_USER)
+    else
+        user_home=$HOME_DIR
+    fi
+
+    # 配置输入法环境变量
+    cat >> $user_home/.profile << 'EOF'
+
+# Fcitx5 中文输入法配置
+export GTK_IM_MODULE=fcitx
+export QT_IM_MODULE=fcitx
+export XMODIFIERS=@im=fcitx
+export INPUT_METHOD=fcitx
+export SDL_IM_MODULE=fcitx
+EOF
+
+    # 创建 fcitx5 自动启动
+    mkdir -p $user_home/.config/autostart
+    cat > $user_home/.config/autostart/fcitx5.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Fcitx5
+Exec=fcitx5
+Hidden=false
+EOF
+
+    # 配置 fcitx5 默认使用拼音
+    mkdir -p $user_home/.config/fcitx5/profile
+    cat > $user_home/.config/fcitx5/profile << 'EOF'
+[Groups/0]
+Name=Default
+Default Layout=us
+DefaultIM=pinyin
+
+[Groups/0/Items/0]
+Name=keyboard-us
+Layout=
+
+[Groups/0/Items/1]
+Name=pinyin
+Layout=
+
+[GroupOrder]
+0=Default
+EOF
+
+    # 修改 VNC 启动脚本，添加输入法启动
+    if [ -f $user_home/.vnc/xstartup ]; then
+        # 检查是否已添加
+        if ! grep -q "fcitx5" $user_home/.vnc/xstartup; then
+            sed -i '/exec startxfce4/i \
+# 启动中文输入法\
+export GTK_IM_MODULE=fcitx\
+export QT_IM_MODULE=fcitx\
+export XMODIFIERS=@im=fcitx\
+fcitx5 -d &\
+sleep 1' $user_home/.vnc/xstartup
+        fi
+    fi
+
+    print_success "中文输入法安装完成"
+    echo ""
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo -e "  使用方法:"
+    echo -e "  ${GREEN}Ctrl + Space${NC}  切换中英文输入法"
+    echo -e "  ${GREEN}Shift${NC}         临时切换英文"
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo ""
+    print_warning "需要重启 VNC 服务才能生效"
+    read -p "是否现在重启 VNC？[Y/n]: " restart_vnc
+    if [[ ! "$restart_vnc" =~ ^[Nn] ]]; then
+        restart_services
+    fi
+}
+
+setup_clipboard() {
+    print_info "配置剪贴板共享..."
+
+    # 安装剪贴板工具
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        xclip xsel autocutsel
+
+    # 获取安装用户的 home 目录
+    local user_home
+    if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ]; then
+        user_home=$(eval echo ~$INSTALL_USER)
+    else
+        user_home=$HOME_DIR
+    fi
+
+    # 修改 VNC 启动脚本，添加剪贴板同步
+    if [ -f $user_home/.vnc/xstartup ]; then
+        # 检查是否已添加
+        if ! grep -q "autocutsel" $user_home/.vnc/xstartup; then
+            sed -i '/exec startxfce4/i \
+# 剪贴板同步\
+autocutsel -fork &\
+autocutsel -selection PRIMARY -fork &' $user_home/.vnc/xstartup
+        fi
+    fi
+
+    print_success "剪贴板配置完成"
+    echo ""
+    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}  noVNC 剪贴板使用说明：${NC}"
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo ""
+    echo -e "  ${GREEN}方法 1: noVNC 剪贴板面板${NC}"
+    echo -e "  点击左侧工具栏的「剪贴板」图标"
+    echo -e "  粘贴内容到文本框，远程桌面即可使用 Ctrl+V 粘贴"
+    echo ""
+    echo -e "  ${GREEN}方法 2: 浏览器快捷键（需授权）${NC}"
+    echo -e "  首次使用时，浏览器会请求剪贴板权限，请点击「允许」"
+    echo -e "  然后可直接使用 Ctrl+C / Ctrl+V"
+    echo ""
+    echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
+    echo -e "${YELLOW}  注意：部分浏览器可能限制剪贴板访问${NC}"
+    echo -e "  推荐使用 Chrome/Edge，并确保使用 HTTPS 连接"
+    echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    print_warning "需要重启 VNC 服务才能生效"
+    read -p "是否现在重启 VNC？[Y/n]: " restart_vnc
+    if [[ ! "$restart_vnc" =~ ^[Nn] ]]; then
+        restart_services
+    fi
+}
+
 install_firefox() {
     print_info "安装 Firefox 浏览器..."
     sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" firefox
@@ -634,6 +773,7 @@ show_apps_menu() {
 
         # 检查已安装状态
         local android_studio_status firefox_status chrome_status telegram_status redroid_status
+        local chinese_input_status clipboard_status
 
         if [ -d /opt/android-studio ]; then
             android_studio_status="${GREEN}[已安装]${NC}"
@@ -665,47 +805,71 @@ show_apps_menu() {
             redroid_status="${YELLOW}[未安装]${NC}"
         fi
 
+        if command -v fcitx5 &> /dev/null; then
+            chinese_input_status="${GREEN}[已安装]${NC}"
+        else
+            chinese_input_status="${YELLOW}[未安装]${NC}"
+        fi
+
+        if command -v autocutsel &> /dev/null; then
+            clipboard_status="${GREEN}[已配置]${NC}"
+        else
+            clipboard_status="${YELLOW}[未配置]${NC}"
+        fi
+
+        echo -e "  ${CYAN}── 系统增强 ──${NC}"
+        echo -e "  ${YELLOW}1)${NC} 安装中文输入法          $chinese_input_status"
+        echo -e "  ${YELLOW}2)${NC} 配置剪贴板共享          $clipboard_status"
+        echo ""
         echo -e "  ${CYAN}── 开发工具 ──${NC}"
-        echo -e "  ${YELLOW}1)${NC} 安装 Android Studio      $android_studio_status"
+        echo -e "  ${YELLOW}3)${NC} 安装 Android Studio      $android_studio_status"
         echo ""
         echo -e "  ${CYAN}── 浏览器 ──${NC}"
-        echo -e "  ${YELLOW}2)${NC} 安装 Firefox 浏览器      $firefox_status"
-        echo -e "  ${YELLOW}3)${NC} 安装 Google Chrome       $chrome_status"
+        echo -e "  ${YELLOW}4)${NC} 安装 Firefox 浏览器      $firefox_status"
+        echo -e "  ${YELLOW}5)${NC} 安装 Google Chrome       $chrome_status"
         echo ""
         echo -e "  ${CYAN}── 通讯工具 ──${NC}"
-        echo -e "  ${YELLOW}4)${NC} 安装 Telegram            $telegram_status"
+        echo -e "  ${YELLOW}6)${NC} 安装 Telegram            $telegram_status"
         echo ""
         echo -e "  ${CYAN}── 云手机 ──${NC}"
-        echo -e "  ${YELLOW}5)${NC} 安装 Redroid 云手机      $redroid_status"
-        echo -e "  ${YELLOW}6)${NC} Redroid 管理"
+        echo -e "  ${YELLOW}7)${NC} 安装 Redroid 云手机      $redroid_status"
+        echo -e "  ${YELLOW}8)${NC} Redroid 管理"
         echo ""
         echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
         echo -e "  ${YELLOW}0)${NC} 返回主菜单"
         echo ""
-        read -p "请选择操作 [0-6]: " choice
+        read -p "请选择操作 [0-8]: " choice
 
         case $choice in
             1)
-                install_android_studio
+                install_chinese_input
                 read -p "按回车继续..."
                 ;;
             2)
-                install_firefox
+                setup_clipboard
                 read -p "按回车继续..."
                 ;;
             3)
-                install_chrome
+                install_android_studio
                 read -p "按回车继续..."
                 ;;
             4)
-                install_telegram
+                install_firefox
                 read -p "按回车继续..."
                 ;;
             5)
-                install_redroid
+                install_chrome
                 read -p "按回车继续..."
                 ;;
             6)
+                install_telegram
+                read -p "按回车继续..."
+                ;;
+            7)
+                install_redroid
+                read -p "按回车继续..."
+                ;;
+            8)
                 manage_redroid
                 ;;
             0)
