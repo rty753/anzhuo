@@ -30,8 +30,22 @@ print_error() { echo -e "${RED}[✗]${NC} $1"; }
 # 全局变量
 CURRENT_USER=$(whoami)
 HOME_DIR=$(eval echo ~$CURRENT_USER)
-CONFIG_FILE="$HOME_DIR/.android-studio-remote.conf"
-INSTALL_STATUS_FILE="$HOME_DIR/.android-studio-remote.status"
+
+# 系统级配置目录（所有用户共享）
+SYSTEM_CONFIG_DIR="/etc/android-studio-remote"
+SYSTEM_CONFIG_FILE="$SYSTEM_CONFIG_DIR/config.conf"
+
+# 用户级配置（向后兼容）
+USER_CONFIG_FILE="$HOME_DIR/.android-studio-remote.conf"
+
+# 自动检测配置文件位置
+if [ -f "$SYSTEM_CONFIG_FILE" ]; then
+    CONFIG_FILE="$SYSTEM_CONFIG_FILE"
+elif [ -f "$USER_CONFIG_FILE" ]; then
+    CONFIG_FILE="$USER_CONFIG_FILE"
+else
+    CONFIG_FILE="$SYSTEM_CONFIG_FILE"
+fi
 
 #============================================================================
 # 工具函数
@@ -165,6 +179,43 @@ is_fully_installed() {
     else
         return 0
     fi
+}
+
+# 检测是否有任何安装（系统级检测）
+has_any_installation() {
+    # 检查系统级配置
+    [ -f "$SYSTEM_CONFIG_FILE" ] && return 0
+    # 检查 Android Studio
+    [ -d "/opt/android-studio" ] && return 0
+    # 检查 systemd 服务
+    [ -f "/etc/systemd/system/novnc.service" ] && return 0
+    # 检查任何用户的配置文件
+    for home in /home/*; do
+        [ -f "$home/.android-studio-remote.conf" ] && return 0
+    done
+    [ -f "/root/.android-studio-remote.conf" ] && return 0
+    return 1
+}
+
+# 查找并加载配置文件
+find_and_load_config() {
+    # 优先系统级
+    if [ -f "$SYSTEM_CONFIG_FILE" ]; then
+        CONFIG_FILE="$SYSTEM_CONFIG_FILE"
+        return 0
+    fi
+    # 查找用户级
+    for home in /home/*; do
+        if [ -f "$home/.android-studio-remote.conf" ]; then
+            CONFIG_FILE="$home/.android-studio-remote.conf"
+            return 0
+        fi
+    done
+    if [ -f "/root/.android-studio-remote.conf" ]; then
+        CONFIG_FILE="/root/.android-studio-remote.conf"
+        return 0
+    fi
+    return 1
 }
 
 get_missing_components() {
@@ -403,15 +454,23 @@ configure_firewall() {
 save_config() {
     local port=$1
     local password=$2
-    cat > $CONFIG_FILE << EOF
+    local install_user=$3
+
+    # 创建系统级配置目录
+    sudo mkdir -p $SYSTEM_CONFIG_DIR
+
+    sudo tee $SYSTEM_CONFIG_FILE > /dev/null << EOF
 # Android Studio 远程桌面配置
 # 生成时间: $(date)
+# 安装用户: ${install_user:-$CURRENT_USER}
 
 NOVNC_PORT=$port
 VNC_PASSWORD=$password
 VNC_PORT=5901
+INSTALL_USER=${install_user:-$CURRENT_USER}
 EOF
-    chmod 600 $CONFIG_FILE
+    sudo chmod 644 $SYSTEM_CONFIG_FILE
+    CONFIG_FILE="$SYSTEM_CONFIG_FILE"
 }
 
 #============================================================================
@@ -700,7 +759,7 @@ full_install() {
     read
 
     # 保存配置（安装前保存，便于断点续装）
-    save_config $novnc_port $vnc_password
+    save_config $novnc_port $vnc_password $CURRENT_USER
 
     # 开始安装
     echo ""
@@ -763,19 +822,21 @@ full_install() {
 # 主入口
 #============================================================================
 main() {
-    # 检查是否为 root
+    # root 用户警告（但不阻止，允许管理）
     if [ "$EUID" -eq 0 ]; then
-        print_error "请不要使用 root 用户运行此脚本！"
-        print_info "请使用普通用户运行: bash install-android-studio-remote.sh"
-        exit 1
+        print_warning "检测到 root 用户"
+        print_info "建议使用普通用户进行安装，root 用户可用于管理"
     fi
 
+    # 尝试查找已有配置
+    find_and_load_config
+
     # 检测安装状态
-    if [ -f "$CONFIG_FILE" ] && is_fully_installed; then
+    if has_any_installation && is_fully_installed; then
         # 已完整安装，进入管理界面
         show_management_menu
-    elif [ -f "$CONFIG_FILE" ]; then
-        # 有配置但未完整安装，提供选项
+    elif has_any_installation; then
+        # 有安装但未完整，提供选项
         clear
         echo ""
         echo -e "${YELLOW}检测到未完成的安装${NC}"
@@ -799,7 +860,8 @@ main() {
                 fi
                 ;;
             2)
-                rm -f $CONFIG_FILE
+                sudo rm -f $SYSTEM_CONFIG_FILE
+                rm -f $USER_CONFIG_FILE
                 full_install
                 ;;
             3)
@@ -814,6 +876,11 @@ main() {
         esac
     else
         # 全新安装
+        if [ "$EUID" -eq 0 ]; then
+            print_error "首次安装请使用普通用户！"
+            print_info "请切换到普通用户后重新运行"
+            exit 1
+        fi
         full_install
     fi
 }
