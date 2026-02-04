@@ -130,7 +130,7 @@ read
 #============================================================================
 # 1. 系统更新和基础依赖
 #============================================================================
-print_info "步骤 1/7: 更新系统并安装基础依赖..."
+print_info "步骤 1/8: 更新系统并安装基础依赖..."
 
 sudo apt-get update
 sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
@@ -149,7 +149,7 @@ print_success "基础依赖安装完成"
 #============================================================================
 # 2. 安装 XFCE 桌面环境
 #============================================================================
-print_info "步骤 2/7: 安装 XFCE 桌面环境..."
+print_info "步骤 2/8: 安装 XFCE 桌面环境..."
 
 sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     xfce4 xfce4-goodies dbus-x11
@@ -159,7 +159,7 @@ print_success "XFCE 桌面环境安装完成"
 #============================================================================
 # 3. 安装 TigerVNC Server
 #============================================================================
-print_info "步骤 3/7: 安装 TigerVNC Server..."
+print_info "步骤 3/8: 安装 TigerVNC Server..."
 
 sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     tigervnc-standalone-server tigervnc-common
@@ -185,7 +185,7 @@ print_success "TigerVNC 安装完成"
 #============================================================================
 # 4. 安装 noVNC（支持浏览器访问）
 #============================================================================
-print_info "步骤 4/7: 安装 noVNC..."
+print_info "步骤 4/8: 安装 noVNC..."
 
 sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     novnc python3-websockify python3-numpy
@@ -209,7 +209,7 @@ print_success "noVNC 安装完成，SSL 证书已生成"
 #============================================================================
 # 5. 安装 Java JDK（Android Studio 依赖）
 #============================================================================
-print_info "步骤 5/7: 安装 Java JDK..."
+print_info "步骤 5/8: 安装 Java JDK..."
 
 sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     openjdk-17-jdk
@@ -219,7 +219,7 @@ print_success "Java JDK 安装完成"
 #============================================================================
 # 6. 下载并安装 Android Studio
 #============================================================================
-print_info "步骤 6/7: 下载并安装 Android Studio..."
+print_info "步骤 6/8: 下载并安装 Android Studio..."
 
 ANDROID_STUDIO_URL="https://redirector.gvt1.com/edgedl/android/studio/ide-zips/2025.2.3.9/android-studio-2025.2.3.9-linux.tar.gz"
 ANDROID_STUDIO_DIR="/opt/android-studio"
@@ -257,9 +257,48 @@ sudo ln -sf /opt/android-studio/bin/studio.sh /usr/local/bin/android-studio
 print_success "Android Studio 安装完成"
 
 #============================================================================
-# 7. 创建系统服务
+# 7. 安装 Google Chrome 浏览器
 #============================================================================
-print_info "步骤 7/7: 创建系统服务..."
+print_info "步骤 7/8: 安装 Google Chrome 浏览器..."
+
+# 下载并安装 Google Chrome
+wget -q -O /tmp/google-chrome.deb "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+    /tmp/google-chrome.deb || sudo apt-get install -f -y
+rm -f /tmp/google-chrome.deb
+
+# 设置 Chrome 为默认浏览器
+sudo update-alternatives --set x-www-browser /usr/bin/google-chrome-stable 2>/dev/null || true
+sudo update-alternatives --set gnome-www-browser /usr/bin/google-chrome-stable 2>/dev/null || true
+xdg-settings set default-web-browser google-chrome.desktop 2>/dev/null || true
+
+# 创建桌面快捷方式
+cat > $HOME_DIR/Desktop/google-chrome.desktop << EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Google Chrome
+Icon=google-chrome
+Exec=/usr/bin/google-chrome-stable %U
+Categories=Network;WebBrowser;
+Terminal=false
+StartupNotify=true
+EOF
+
+chmod +x $HOME_DIR/Desktop/google-chrome.desktop
+
+# 配置 XFCE 默认浏览器
+mkdir -p $HOME_DIR/.config/xfce4
+cat > $HOME_DIR/.config/xfce4/helpers.rc << EOF
+WebBrowser=google-chrome
+EOF
+
+print_success "Google Chrome 安装完成并设置为默认浏览器"
+
+#============================================================================
+# 8. 创建系统服务
+#============================================================================
+print_info "步骤 8/8: 创建系统服务..."
 
 # VNC 服务
 sudo tee /etc/systemd/system/vncserver@.service > /dev/null << EOF
