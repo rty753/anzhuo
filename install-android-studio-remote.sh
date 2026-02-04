@@ -654,120 +654,178 @@ EOF
 }
 
 install_redroid() {
-    print_info "安装 Redroid (Docker 云手机)..."
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║              Redroid 云手机安装                            ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
 
-    # 检查并安装 Docker
+    # 检测系统兼容性
+    print_info "检测系统兼容性..."
+
+    local kernel_version=$(uname -r)
+    local binder_supported=false
+
+    # 检查内核模块
+    if modinfo binder_linux &>/dev/null || [ -e /dev/binder ] || [ -e /dev/binderfs ]; then
+        binder_supported=true
+        print_success "内核支持 binder 模块"
+    else
+        # 尝试安装内核模块
+        print_warning "尝试加载 binder 内核模块..."
+        sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+            linux-modules-extra-$(uname -r) 2>/dev/null || true
+
+        if sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>/dev/null; then
+            binder_supported=true
+            print_success "binder 模块加载成功"
+        fi
+    fi
+
+    if [ "$binder_supported" = false ]; then
+        echo ""
+        print_warning "当前系统内核可能不完全支持 Redroid"
+        echo -e "  内核版本: ${YELLOW}$kernel_version${NC}"
+        echo ""
+        echo -e "  ${CYAN}建议方案：${NC}"
+        echo -e "    1. 使用支持嵌套虚拟化的云服务器"
+        echo -e "    2. 使用裸金属服务器"
+        echo -e "    3. 使用 Ubuntu 22.04+ 带 linux-modules-extra"
+        echo ""
+        read -p "是否仍要继续安装？[y/N]: " force_install
+        if [[ ! "$force_install" =~ ^[Yy] ]]; then
+            return 1
+        fi
+    fi
+
+    # 安装 Docker
     if ! command -v docker &> /dev/null; then
-        print_info "正在安装 Docker..."
+        print_info "安装 Docker..."
         curl -fsSL https://get.docker.com | sudo sh
-        sudo usermod -aG docker $CURRENT_USER
         sudo systemctl enable docker
         sudo systemctl start docker
         print_success "Docker 安装完成"
     else
-        print_info "Docker 已安装"
+        print_success "Docker 已安装"
     fi
 
-    # 加载必要的内核模块
+    # 配置内核模块
     print_info "配置内核模块..."
     sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>/dev/null || true
     sudo modprobe ashmem_linux 2>/dev/null || true
 
-    # 检查是否支持 binder
-    if [ ! -e /dev/binder ] && [ ! -e /dev/binderfs/binder ]; then
-        print_warning "系统可能不支持 binder，尝试安装 binder 模块..."
-        sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-            linux-modules-extra-$(uname -r) 2>/dev/null || true
-        sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>/dev/null || true
-    fi
-
-    # 创建 binderfs 挂载点（如果需要）
+    # 设置 binderfs
     if [ ! -e /dev/binder ]; then
-        sudo mkdir -p /dev/binderfs
+        sudo mkdir -p /dev/binderfs 2>/dev/null || true
         sudo mount -t binder binder /dev/binderfs 2>/dev/null || true
     fi
 
-    # 拉取 Redroid 镜像
-    print_info "拉取 Redroid 镜像（约 1GB）..."
-    sudo docker pull redroid/redroid:11.0.0-latest
-
-    # 生成随机 ADB 端口
+    # 生成端口
     local adb_port=$(shuf -i 5555-5600 -n 1)
+    local vnc_port=$(shuf -i 5900-5950 -n 1)
 
-    # 运行 Redroid 容器
+    # 停止并删除旧容器
+    sudo docker rm -f redroid 2>/dev/null || true
+
+    # 选择 Android 版本
+    echo ""
+    echo -e "${YELLOW}选择 Android 版本：${NC}"
+    echo -e "  1) Android 11 (推荐，兼容性好)"
+    echo -e "  2) Android 12"
+    echo -e "  3) Android 13 (最新)"
+    read -p "请选择 [1-3，默认 1]: " android_choice
+
+    local redroid_image="redroid/redroid:11.0.0-latest"
+    case $android_choice in
+        2) redroid_image="redroid/redroid:12.0.0-latest" ;;
+        3) redroid_image="redroid/redroid:13.0.0-latest" ;;
+    esac
+
+    # 拉取镜像
+    print_info "拉取 Redroid 镜像（约 1-2GB，请耐心等待）..."
+    sudo docker pull $redroid_image
+
+    # 启动容器
     print_info "启动 Redroid 容器..."
     sudo docker run -d --name redroid \
         --privileged \
+        --memory=2g \
         -v /dev/binderfs:/dev/binderfs \
         -p ${adb_port}:5555 \
-        redroid/redroid:11.0.0-latest \
+        $redroid_image \
         androidboot.redroid_gpu_mode=guest \
         androidboot.redroid_width=720 \
         androidboot.redroid_height=1280 \
-        androidboot.redroid_dpi=320 2>/dev/null || {
-            # 如果 binderfs 不可用，尝试其他方式
-            sudo docker run -d --name redroid \
-                --privileged \
-                -p ${adb_port}:5555 \
-                redroid/redroid:11.0.0-latest \
-                androidboot.redroid_gpu_mode=guest \
-                androidboot.redroid_width=720 \
-                androidboot.redroid_height=1280 \
-                androidboot.redroid_dpi=320
-        }
+        androidboot.redroid_dpi=320 \
+        androidboot.redroid_fps=30 2>/dev/null || \
+    sudo docker run -d --name redroid \
+        --privileged \
+        --memory=2g \
+        -p ${adb_port}:5555 \
+        $redroid_image \
+        androidboot.redroid_gpu_mode=guest \
+        androidboot.redroid_width=720 \
+        androidboot.redroid_height=1280 \
+        androidboot.redroid_dpi=320 \
+        androidboot.redroid_fps=30
 
-    # 安装 scrcpy 用于显示
-    print_info "安装 scrcpy（屏幕投射工具）..."
-    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-        scrcpy adb 2>/dev/null || {
-            # 如果 apt 没有 scrcpy，用 snap 安装
-            sudo snap install scrcpy 2>/dev/null || true
-        }
-
-    # 获取安装用户的 home 目录
-    local user_home
-    if [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ]; then
-        user_home=$(eval echo ~$INSTALL_USER)
-    else
-        user_home=$HOME_DIR
+    # 检查容器状态
+    sleep 3
+    if ! sudo docker ps | grep -q redroid; then
+        print_error "Redroid 启动失败，查看日志："
+        sudo docker logs redroid 2>&1 | tail -20
+        echo ""
+        print_warning "可能原因：内核不支持 binder 模块"
+        return 1
     fi
 
-    # 创建连接脚本
-    cat > $user_home/Desktop/redroid-connect.sh << EOF
+    # 安装 ADB 和 scrcpy
+    print_info "安装 ADB 和 scrcpy..."
+    sudo apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        adb scrcpy 2>/dev/null || sudo apt-get install -y android-tools-adb 2>/dev/null || true
+
+    # 获取用户目录
+    local user_home=$HOME_DIR
+    [ -n "$INSTALL_USER" ] && [ "$INSTALL_USER" != "root" ] && user_home=$(eval echo ~$INSTALL_USER)
+
+    # 保存配置
+    echo "ADB_PORT=$adb_port" | sudo tee -a $SYSTEM_CONFIG_FILE > /dev/null
+
+    # 创建一键连接脚本
+    mkdir -p $user_home/Desktop
+    cat > $user_home/Desktop/云手机.sh << EOF
 #!/bin/bash
+echo "正在连接 Redroid 云手机..."
 adb connect localhost:${adb_port}
 sleep 2
-scrcpy -s localhost:${adb_port}
+echo "启动投屏..."
+scrcpy -s localhost:${adb_port} --window-title "云手机" 2>/dev/null || \\
+    echo "scrcpy 启动失败，请尝试: adb connect localhost:${adb_port} && scrcpy"
 EOF
-    chmod +x $user_home/Desktop/redroid-connect.sh
+    chmod +x $user_home/Desktop/云手机.sh
 
-    # 创建桌面快捷方式
-    cat > $user_home/Desktop/redroid.desktop << EOF
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Redroid 云手机
-Icon=phone
-Exec=$user_home/Desktop/redroid-connect.sh
-Categories=Development;
-Terminal=true
-StartupNotify=true
-EOF
-    chmod +x $user_home/Desktop/redroid.desktop
-
-    # 开放防火墙端口
+    # 开放防火墙
     configure_firewall $adb_port
 
     echo ""
-    print_success "Redroid 安装完成！"
+    print_success "Redroid 云手机安装完成！"
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║              使用说明                                      ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${GREEN}方法 1：桌面快捷方式${NC}"
+    echo -e "    双击桌面「云手机.sh」即可连接"
+    echo ""
+    echo -e "  ${GREEN}方法 2：命令行${NC}"
+    echo -e "    adb connect localhost:${adb_port}"
+    echo -e "    scrcpy -s localhost:${adb_port}"
+    echo ""
+    echo -e "  ${GREEN}ADB 端口：${NC}${adb_port}"
     echo ""
     echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
-    echo -e "  ADB 端口: ${GREEN}${adb_port}${NC}"
-    echo -e "  连接命令: ${GREEN}adb connect localhost:${adb_port}${NC}"
-    echo -e "  投屏命令: ${GREEN}scrcpy -s localhost:${adb_port}${NC}"
+    echo -e "  ${YELLOW}提示：首次启动 Android 需要 1-2 分钟初始化${NC}"
     echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
-    echo ""
-    print_warning "请在云控制台开放端口 ${adb_port} 以便远程 ADB 连接"
     echo ""
 }
 
@@ -854,7 +912,7 @@ show_apps_menu() {
         echo ""
 
         # 检查已安装状态
-        local android_studio_status firefox_status chrome_status telegram_status
+        local android_studio_status firefox_status chrome_status telegram_status redroid_status
         local chinese_input_status clipboard_status
 
         if [ -d /opt/android-studio ]; then
@@ -908,10 +966,22 @@ show_apps_menu() {
         echo -e "  ${CYAN}── 通讯工具 ──${NC}"
         echo -e "  ${YELLOW}7)${NC} 安装 Telegram            $telegram_status"
         echo ""
+
+        # 检测 Redroid 状态
+        if sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^redroid"; then
+            redroid_status="${GREEN}[已安装]${NC}"
+        else
+            redroid_status="${YELLOW}[未安装]${NC}"
+        fi
+
+        echo -e "  ${CYAN}── 云手机 ──${NC}"
+        echo -e "  ${YELLOW}8)${NC} 安装 Redroid 云手机      $redroid_status"
+        echo -e "  ${YELLOW}9)${NC} Redroid 管理"
+        echo ""
         echo -e "${CYAN}────────────────────────────────────────────────────────────${NC}"
         echo -e "  ${YELLOW}0)${NC} 返回主菜单"
         echo ""
-        read -p "请选择操作 [0-7]: " choice
+        read -p "请选择操作 [0-9]: " choice
 
         case $choice in
             1)
@@ -941,6 +1011,13 @@ show_apps_menu() {
             7)
                 install_telegram
                 read -p "按回车继续..."
+                ;;
+            8)
+                install_redroid
+                read -p "按回车继续..."
+                ;;
+            9)
+                manage_redroid
                 ;;
             0)
                 return
@@ -1493,12 +1570,6 @@ full_install() {
 # 主入口
 #============================================================================
 main() {
-    # root 用户警告（但不阻止，允许管理）
-    if [ "$EUID" -eq 0 ]; then
-        print_warning "检测到 root 用户"
-        print_info "建议使用普通用户进行安装，root 用户可用于管理"
-    fi
-
     # 尝试查找已有配置
     find_and_load_config
 
@@ -1547,11 +1618,6 @@ main() {
         esac
     else
         # 全新安装
-        if [ "$EUID" -eq 0 ]; then
-            print_error "首次安装请使用普通用户！"
-            print_info "请切换到普通用户后重新运行"
-            exit 1
-        fi
         full_install
     fi
 }
